@@ -1,0 +1,6 @@
+{
+  "name": "MyBrowser(MB)",
+  "description": "Pure-AOSP, Rust-ready foldable web browser optimized for 1:1.4 passport foldables with Jetpack WindowManager postures, dual-pane split browsing, DoH DNS, and Room local persistence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
