@@ -47,6 +47,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmarks
@@ -90,6 +91,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Rect
@@ -124,12 +126,32 @@ import com.mybrowser.appui.viewmodel.TabUiModel
 import com.mybrowser.appui.viewmodel.ToolbarActionId
 import com.mybrowser.appui.viewmodel.ToolbarConfigUi
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlinx.coroutines.delay
 
-private enum class SplitPreviewDirection {
+enum class OmniboxLongPressDirection {
   NEUTRAL,
-  RIGHT,
-  LEFT,
+  SPLIT_LEFT,
+  SPLIT_RIGHT,
+  AI_UP,
+}
+
+fun resolveLongPressDirection(
+  dxPx: Float,
+  dyPx: Float,
+  canSplit: Boolean,
+  splitThresholdPx: Float,
+  aiThresholdPx: Float,
+): OmniboxLongPressDirection {
+  val absX = abs(dxPx)
+  val absY = abs(dyPx)
+  if (dyPx < -aiThresholdPx && absY >= absX * 0.85f) {
+    return OmniboxLongPressDirection.AI_UP
+  }
+  if (canSplit && absX > splitThresholdPx && absX >= absY) {
+    return if (dxPx > 0f) OmniboxLongPressDirection.SPLIT_RIGHT else OmniboxLongPressDirection.SPLIT_LEFT
+  }
+  return OmniboxLongPressDirection.NEUTRAL
 }
 
 /**
@@ -188,10 +210,13 @@ fun SafariFloatingBar(
   },
   onTriggerSplitGesture: (directionRight: Boolean) -> Unit = {},
   onCloseSplitPane: () -> Unit = {},
+  onAiSwipeProgress: (Float) -> Unit = {},
+  onAiSwipeEnd: (completed: Boolean, velocityYPxPerSec: Float) -> Unit = { _, _ -> },
   onFocusOmnibox: () -> Unit,
   onBlurOmnibox: () -> Unit,
   onOmniboxQueryChange: (String) -> Unit,
   onOmniboxSubmit: (String) -> Unit,
+  onSelectSuggestion: ((url: String, origin: SpatialDiveOrigin) -> Unit)? = null,
   onSelectSearchEngine: (String) -> Unit,
   onReloadOrStop: () -> Unit,
   onExecuteAction: (ToolbarActionId) -> Unit,
@@ -214,26 +239,41 @@ fun SafariFloatingBar(
       BiasAlignment.Horizontal(designConfig.barHorizontalBias.coerceIn(-1f, 1f))
     }
 
-  var isSplitArmed by remember { mutableStateOf(false) }
-  var splitDragX by remember { mutableFloatStateOf(0f) }
+  var isLongPressArmed by remember { mutableStateOf(false) }
+  var longPressDragX by remember { mutableFloatStateOf(0f) }
+  var longPressDragY by remember { mutableFloatStateOf(0f) }
+  val canLongPressSplit = supportsDualPane && splitGestureEnabled
   val density = LocalDensity.current
   val rawThresholdPx = with(density) { splitGestureSensitivity.swipeThresholdDp.dp.toPx() }
   val thresholdPx =
     if (isSplitCompact) minOf(rawThresholdPx, with(density) { 54.dp.toPx() })
     else rawThresholdPx
-  val splitDirection by remember(isSplitArmed, splitDragX, thresholdPx) {
+  val aiThresholdPx = with(density) { 44.dp.toPx() }
+  val longPressDirection by remember(
+    isLongPressArmed,
+    longPressDragX,
+    longPressDragY,
+    canLongPressSplit,
+    thresholdPx,
+    aiThresholdPx,
+  ) {
     derivedStateOf {
-      when {
-        !isSplitArmed -> SplitPreviewDirection.NEUTRAL
-        splitDragX > thresholdPx -> SplitPreviewDirection.RIGHT
-        splitDragX < -thresholdPx -> SplitPreviewDirection.LEFT
-        else -> SplitPreviewDirection.NEUTRAL
+      if (!isLongPressArmed) {
+        OmniboxLongPressDirection.NEUTRAL
+      } else {
+        resolveLongPressDirection(
+          dxPx = longPressDragX,
+          dyPx = longPressDragY,
+          canSplit = canLongPressSplit,
+          splitThresholdPx = thresholdPx,
+          aiThresholdPx = aiThresholdPx,
+        )
       }
     }
   }
   val haptic = LocalHapticFeedback.current
-  LaunchedEffect(isSplitArmed, splitDirection) {
-    if (isSplitArmed && splitDirection != SplitPreviewDirection.NEUTRAL) {
+  LaunchedEffect(isLongPressArmed, longPressDirection) {
+    if (isLongPressArmed && longPressDirection != OmniboxLongPressDirection.NEUTRAL) {
       haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
     }
   }
@@ -276,18 +316,20 @@ fun SafariFloatingBar(
     horizontalAlignment = horizontalAlignment,
     verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
   ) {
-    // 1초 길게 누르기 + 스와이프 화면 분할 방향 프리뷰 HUD
+    // 680ms 길게 누르기 + 3방향(좌/우 분할 · 상단 AI 호출) 스프링 방향 가이드 HUD
     AnimatedVisibility(
-      visible = isSplitArmed && supportsDualPane && splitGestureEnabled,
+      visible = isLongPressArmed,
       enter =
         fadeIn(BrowserMotion.expressiveSpring(speedScale)) +
-          scaleIn(BrowserMotion.expressiveSpring(speedScale), initialScale = 0.90f),
+          scaleIn(BrowserMotion.expressiveSpring(speedScale), initialScale = 0.88f) +
+          slideInVertically(BrowserMotion.expressiveSpring(speedScale)) { it / 4 },
       exit =
         fadeOut(BrowserMotion.snappySpring(speedScale)) +
-          scaleOut(BrowserMotion.snappySpring(speedScale), targetScale = 0.90f),
+          scaleOut(BrowserMotion.snappySpring(speedScale), targetScale = 0.88f),
     ) {
-      SplitGesturePreviewHud(
-        direction = splitDirection,
+      OmniboxLongPressDirectionHud(
+        direction = longPressDirection,
+        canSplit = canLongPressSplit,
         currentHost =
           if (focusedTab == null || focusedTab.url == "about:mb" || focusedTab.url == "about:blank") {
             "현재 탭"
@@ -328,11 +370,21 @@ fun SafariFloatingBar(
               reverseLayout = true,
             ) {
               items(suggestions, key = { it.url }) { suggestion ->
+                var itemBounds by remember { mutableStateOf(Rect.Zero) }
                 SpringPressSurface(
-                  onClick = { onOmniboxSubmit(suggestion.url) },
+                  onClick = {
+                    val origin = SpatialDiveOrigin(itemBounds, designConfig.cardCornerRadiusDp)
+                    if (onSelectSuggestion != null) {
+                      onSelectSuggestion(suggestion.url, origin)
+                    } else {
+                      onOmniboxSubmit(suggestion.url)
+                    }
+                  },
                   shape = designConfig.cardInnerShape(),
                   unselectedColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.72f),
-                  modifier = Modifier.fillMaxWidth(),
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .onGloballyPositioned { itemBounds = it.boundsInRoot() },
                 ) {
                   Row(
                     modifier =
@@ -434,15 +486,19 @@ fun SafariFloatingBar(
       swipeUpOpenTabs = swipeUpOpenTabs,
       splitGestureEnabled = splitGestureEnabled,
       supportsDualPane = supportsDualPane,
-      isSplitArmed = isSplitArmed,
+      isLongPressArmed = isLongPressArmed,
       splitThresholdPx = thresholdPx,
+      aiThresholdPx = aiThresholdPx,
       heroDragLiftProgress = heroDragLiftProgress,
-      onSplitArmChanged = { armed, dragX ->
-        isSplitArmed = armed
-        splitDragX = dragX
+      onLongPressStateChanged = { armed, dragX, dragY ->
+        isLongPressArmed = armed
+        longPressDragX = dragX
+        longPressDragY = dragY
       },
       onTriggerSplitGesture = onTriggerSplitGesture,
       onCloseSplitPane = onCloseSplitPane,
+      onAiSwipeProgress = onAiSwipeProgress,
+      onAiSwipeEnd = onAiSwipeEnd,
       onHorizontalTabDrag = onHorizontalTabDrag,
       onHorizontalTabDragEnd = onHorizontalTabDragEnd,
       onSwipeUpDragProgress = onSwipeUpDragProgress,
@@ -461,125 +517,171 @@ fun SafariFloatingBar(
 }
 
 @Composable
-private fun SplitGesturePreviewHud(
-  direction: SplitPreviewDirection,
+private fun OmniboxLongPressDirectionHud(
+  direction: OmniboxLongPressDirection,
+  canSplit: Boolean,
   currentHost: String,
   designConfig: DesignUiConfig,
 ) {
-  val isLeft = direction == SplitPreviewDirection.LEFT
-  val isRight = direction == SplitPreviewDirection.RIGHT
+  val isLeft = direction == OmniboxLongPressDirection.SPLIT_LEFT
+  val isRight = direction == OmniboxLongPressDirection.SPLIT_RIGHT
+  val isAiUp = direction == OmniboxLongPressDirection.AI_UP
   val guideText =
     when (direction) {
-      SplitPreviewDirection.RIGHT -> "오른쪽 분할 · 현재 탭 → 오른쪽 / 새 탭 ← 왼쪽"
-      SplitPreviewDirection.LEFT -> "왼쪽 분할 · 현재 탭 ← 왼쪽 / 새 탭 → 오른쪽"
-      SplitPreviewDirection.NEUTRAL -> "좌우로 밀어 1:1.4 화면 분할"
+      OmniboxLongPressDirection.AI_UP -> "위로 놓으면 AI 채팅 브릿지 실행"
+      OmniboxLongPressDirection.SPLIT_RIGHT -> "오른쪽 분할 · 현재 탭 → 오른쪽 / 새 탭 ← 왼쪽"
+      OmniboxLongPressDirection.SPLIT_LEFT -> "왼쪽 분할 · 현재 탭 ← 왼쪽 / 새 탭 → 오른쪽"
+      OmniboxLongPressDirection.NEUTRAL ->
+        if (canSplit) "↑ AI 호출 · ←/→ 화면 분할" else "↑ 위로 드래그하여 AI 호출"
     }
 
   Surface(
     shape = designConfig.cardOuterShape(),
     color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
     tonalElevation = 10.dp,
-    shadowElevation = 14.dp,
-    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.85f)),
-    modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().testTag("split_gesture_preview_hud"),
+    shadowElevation = 16.dp,
+    border =
+      BorderStroke(
+        width = 1.5.dp,
+        color =
+          if (isAiUp) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.9f)
+          else MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+      ),
+    modifier = Modifier.widthIn(max = 380.dp).fillMaxWidth().testTag("omnibox_long_press_hud"),
   ) {
     Column(
       modifier = Modifier.padding(BrowserSpacing.Grid1_5),
       horizontalAlignment = Alignment.CenterHorizontally,
       verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
     ) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
-        verticalAlignment = Alignment.CenterVertically,
+      // Top AI Call Chip
+      Surface(
+        shape = designConfig.cardInnerShape(),
+        color =
+          if (isAiUp) MaterialTheme.colorScheme.tertiaryContainer
+          else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+        border =
+          BorderStroke(
+            width = if (isAiUp) 1.5.dp else 1.dp,
+            color =
+              if (isAiUp) MaterialTheme.colorScheme.tertiary
+              else MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+          ),
+        modifier = Modifier.fillMaxWidth().height(40.dp).testTag("hud_ai_up_pill"),
       ) {
-        // Left Preview Pane
-        Surface(
-          shape = designConfig.cardInnerShape(),
-          color =
-            if (isLeft) MaterialTheme.colorScheme.primaryContainer
-            else if (isRight) MaterialTheme.colorScheme.secondaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
-          border =
-            BorderStroke(
-              width = if (isLeft || isRight) 1.5.dp else 1.dp,
-              color =
-                if (isLeft) MaterialTheme.colorScheme.primary
-                else if (isRight) MaterialTheme.colorScheme.secondary
-                else MaterialTheme.colorScheme.outline,
-            ),
-          modifier = Modifier.weight(1f).height(46.dp),
+        Row(
+          modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.Center,
         ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-          ) {
-            Icon(
-              imageVector =
-                when {
-                  isRight -> Icons.Outlined.Add
-                  else -> Icons.AutoMirrored.Outlined.ArrowBack
-                },
-              contentDescription = null,
-              modifier = Modifier.size(16.dp),
-            )
-            Text(
-              text =
-                when {
-                  isRight -> "새 탭"
-                  isLeft -> currentHost
-                  else -> "왼쪽 창"
-                },
-              style = MaterialTheme.typography.labelSmall,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
+          Icon(
+            imageVector = Icons.Outlined.AutoAwesome,
+            contentDescription = "AI 호출",
+            tint =
+              if (isAiUp) MaterialTheme.colorScheme.tertiary
+              else MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+          )
+          Spacer(Modifier.size(6.dp))
+          Text(
+            text = if (isAiUp) "AI 어시스턴트 열기" else "↑ AI 호출",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = if (isAiUp) FontWeight.Bold else FontWeight.Medium,
+            color =
+              if (isAiUp) MaterialTheme.colorScheme.onTertiaryContainer
+              else MaterialTheme.colorScheme.onSurface,
+          )
         }
+      }
 
-        // Right Preview Pane
-        Surface(
-          shape = designConfig.cardInnerShape(),
-          color =
-            if (isRight) MaterialTheme.colorScheme.primaryContainer
-            else if (isLeft) MaterialTheme.colorScheme.secondaryContainer
-            else MaterialTheme.colorScheme.surfaceVariant,
-          border =
-            BorderStroke(
-              width = if (isLeft || isRight) 1.5.dp else 1.dp,
-              color =
-                if (isRight) MaterialTheme.colorScheme.primary
-                else if (isLeft) MaterialTheme.colorScheme.secondary
-                else MaterialTheme.colorScheme.outline,
-            ),
-          modifier = Modifier.weight(1f).height(46.dp),
+      if (canSplit) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          Row(
-            modifier = Modifier.padding(horizontal = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          // Left Split Pill
+          Surface(
+            shape = designConfig.cardInnerShape(),
+            color =
+              if (isLeft) MaterialTheme.colorScheme.primaryContainer
+              else if (isRight) MaterialTheme.colorScheme.secondaryContainer
+              else MaterialTheme.colorScheme.surfaceVariant,
+            border =
+              BorderStroke(
+                width = if (isLeft || isRight) 1.5.dp else 1.dp,
+                color =
+                  if (isLeft) MaterialTheme.colorScheme.primary
+                  else if (isRight) MaterialTheme.colorScheme.secondary
+                  else MaterialTheme.colorScheme.outline,
+              ),
+            modifier = Modifier.weight(1f).height(44.dp),
           ) {
-            Icon(
-              imageVector =
-                when {
-                  isLeft -> Icons.Outlined.Add
-                  else -> Icons.AutoMirrored.Outlined.ArrowForward
-                },
-              contentDescription = null,
-              modifier = Modifier.size(16.dp),
-            )
-            Text(
-              text =
-                when {
-                  isRight -> currentHost
-                  isLeft -> "새 탭"
-                  else -> "오른쪽 창"
-                },
-              style = MaterialTheme.typography.labelSmall,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+              modifier = Modifier.padding(horizontal = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Icon(
+                imageVector =
+                  if (isRight) Icons.Outlined.Add else Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text =
+                  when {
+                    isRight -> "새 탭"
+                    isLeft -> currentHost
+                    else -> "← 좌측 분할"
+                  },
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
+          }
+
+          // Right Split Pill
+          Surface(
+            shape = designConfig.cardInnerShape(),
+            color =
+              if (isRight) MaterialTheme.colorScheme.primaryContainer
+              else if (isLeft) MaterialTheme.colorScheme.secondaryContainer
+              else MaterialTheme.colorScheme.surfaceVariant,
+            border =
+              BorderStroke(
+                width = if (isLeft || isRight) 1.5.dp else 1.dp,
+                color =
+                  if (isRight) MaterialTheme.colorScheme.primary
+                  else if (isLeft) MaterialTheme.colorScheme.secondary
+                  else MaterialTheme.colorScheme.outline,
+              ),
+            modifier = Modifier.weight(1f).height(44.dp),
+          ) {
+            Row(
+              modifier = Modifier.padding(horizontal = 8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Icon(
+                imageVector =
+                  if (isLeft) Icons.Outlined.Add else Icons.AutoMirrored.Outlined.ArrowForward,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text =
+                  when {
+                    isRight -> currentHost
+                    isLeft -> "새 탭"
+                    else -> "우측 분할 →"
+                  },
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+              )
+            }
           }
         }
       }
@@ -587,7 +689,9 @@ private fun SplitGesturePreviewHud(
       Text(
         text = guideText,
         style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.primary,
+        color =
+          if (isAiUp) MaterialTheme.colorScheme.tertiary
+          else MaterialTheme.colorScheme.primary,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
       )
@@ -619,12 +723,15 @@ private fun MorphingFloatingPill(
   swipeUpOpenTabs: Boolean,
   splitGestureEnabled: Boolean,
   supportsDualPane: Boolean,
-  isSplitArmed: Boolean,
+  isLongPressArmed: Boolean,
   splitThresholdPx: Float,
+  aiThresholdPx: Float,
   heroDragLiftProgress: Float,
-  onSplitArmChanged: (Boolean, Float) -> Unit,
+  onLongPressStateChanged: (armed: Boolean, dragX: Float, dragY: Float) -> Unit,
   onTriggerSplitGesture: (Boolean) -> Unit,
   onCloseSplitPane: () -> Unit,
+  onAiSwipeProgress: (Float) -> Unit,
+  onAiSwipeEnd: (completed: Boolean, velocityYPxPerSec: Float) -> Unit,
   onHorizontalTabDrag: (Float) -> Unit,
   onHorizontalTabDragEnd: (Float, Float) -> Unit,
   onSwipeUpDragProgress: (Float) -> Unit,
@@ -670,9 +777,9 @@ private fun MorphingFloatingPill(
   LaunchedEffect(isHoldingIdle) {
     if (isHoldingIdle) {
       holdProgressTarget = 0f
-      delay(180L)
-      val stepCount = 41
-      val stepMs = 820L / stepCount
+      delay(130L)
+      val stepCount = 34
+      val stepMs = 550L / stepCount
       for (i in 1..stepCount) {
         if (!isHoldingIdle) break
         holdProgressTarget = i / stepCount.toFloat()
@@ -738,31 +845,43 @@ private fun MorphingFloatingPill(
   val canLongPressSplit = supportsDualPane && splitGestureEnabled
   val isOmniboxGestureDisabled = isOmniboxFocused || isCollapsed || pillProgress > 0.3f
 
+  val currentCanSplit by rememberUpdatedState(canLongPressSplit)
+  val currentSwipeEnabled by rememberUpdatedState(swipeEnabled)
+  val currentSwipeUpOpenTabs by rememberUpdatedState(swipeUpOpenTabs)
+  val currentTabCount by rememberUpdatedState(tabCount)
+  val currentSplitThresholdPx by rememberUpdatedState(splitThresholdPx)
+  val currentAiThresholdPx by rememberUpdatedState(aiThresholdPx)
   val currentOnFocusOmnibox by rememberUpdatedState(onFocusOmnibox)
   val currentOnHorizontalTabDrag by rememberUpdatedState(onHorizontalTabDrag)
   val currentOnHorizontalTabDragEnd by rememberUpdatedState(onHorizontalTabDragEnd)
   val currentOnSwipeUpDragProgress by rememberUpdatedState(onSwipeUpDragProgress)
   val currentOnSwipeUpDragEnd by rememberUpdatedState(onSwipeUpDragEnd)
   val currentOnCollapseBar by rememberUpdatedState(onCollapseBar)
-  val currentOnSplitArmChanged by rememberUpdatedState(onSplitArmChanged)
+  val currentOnLongPressStateChanged by rememberUpdatedState(onLongPressStateChanged)
   val currentOnTriggerSplitGesture by rememberUpdatedState(onTriggerSplitGesture)
-  val currentSplitHoldActive by rememberUpdatedState(isHoldingIdle || isSplitArmed)
+  val currentOnAiSwipeProgress by rememberUpdatedState(onAiSwipeProgress)
+  val currentOnAiSwipeEnd by rememberUpdatedState(onAiSwipeEnd)
+  val currentLongPressActive by rememberUpdatedState(isHoldingIdle || isLongPressArmed)
 
-  // 통합 제스처 머신:
-  // - 짧은 탭 -> 주소창 포커스
-  // - 좌우 스와이프 -> 탭 전환
-  // - 위로 드래그 -> VelocityTracker 기반 1:1 Hero Tab-Fly + 탭 서랍 진입
-  // - 아래로 스와이프 -> 알약 축소
-  // - 1000ms 길게 누르기 + 좌우 드래그 -> 1:1.4 즉시 분할
+  val armGlowProgress by
+    animateFloatAsState(
+      targetValue = if (isLongPressArmed) 1f else 0f,
+      animationSpec = ExpressiveSprings.micro(speedScale),
+      label = "OmniboxArmGlow",
+    )
+
+  // 통합 제스처 머신 (pointerInput 키를 최소화해 드래그/홀드 중 리컴포지션 취소 방지):
+  // - 짧은 탭 -> 주소창 포커스 (자식 새로고침 버튼 소비 시 제외)
+  // - 즉시 드래그(680ms 전):
+  //   - 좌우 스와이프 -> 탭 전환 캐러셀
+  //   - 위로 스와이프 -> VelocityTracker 기반 1:1 Hero Tab-Fly + 탭 서랍 진입
+  //   - 아래로 스와이프 -> 알약 축소
+  // - 롱프레스 진입 (680ms 유지 후):
+  //   - 강한 햅틱 + 외곽 포인트 글로우 + 3방향 가이드 HUD (좌/우 분할, ↑ AI 호출)
+  //   - 좌우 드래그(1:1.4 대화면) -> 화면 분할
+  //   - 위쪽 드래그(전체 화면 모드 공통) -> 1:1 실시간 AI 채팅 시트 모핑 호출
   val omniboxGestureModifier =
-    remember(
-      isOmniboxGestureDisabled,
-      canLongPressSplit,
-      swipeEnabled,
-      swipeUpOpenTabs,
-      tabCount,
-      splitThresholdPx,
-    ) {
+    remember(isOmniboxGestureDisabled) {
       if (isOmniboxGestureDisabled) {
         Modifier
       } else {
@@ -772,64 +891,56 @@ private fun MorphingFloatingPill(
             currentOnFocusOmnibox()
             true
           }
-        }.pointerInput(
-          isOmniboxGestureDisabled,
-          canLongPressSplit,
-          swipeEnabled,
-          swipeUpOpenTabs,
-          tabCount,
-          splitThresholdPx,
-        ) {
+        }.pointerInput(isOmniboxGestureDisabled) {
           awaitEachGesture {
             val touchSlop = viewConfiguration.touchSlop
-            val down = awaitFirstDown(requireUnconsumed = false)
+            val holdSlop = maxOf(touchSlop * 1.65f, 18.dp.toPx())
+            val down = awaitFirstDown(requireUnconsumed = true)
+            // 주소창 내부에서 시작된 터치는 부모 barVerticalSwipeModifier가 가로채지 않도록 소비
+            down.consume()
             val downPos = down.position
             val startTime = System.currentTimeMillis()
-            val holdDurationMs = 1000L
+            val holdDurationMs = 680L
             val velocityTracker = VelocityTracker().apply {
               addPosition(down.uptimeMillis, down.position)
             }
 
             var movedEarly = false
-            var releasedEarly = false
+            var releasedWithoutMove = false
+            var releaseWasConsumedByChild = false
             var armed = false
             var earlyDragX = 0f
             var earlyDragY = 0f
 
-            if (canLongPressSplit) {
-              isHoldingIdle = true
-            }
+            isHoldingIdle = true
 
             try {
-              while (!movedEarly && !releasedEarly && !armed) {
+              while (!movedEarly && !releasedWithoutMove && !armed) {
                 val elapsed = System.currentTimeMillis() - startTime
                 val remaining = holdDurationMs - elapsed
                 if (remaining <= 0L) {
-                  if (canLongPressSplit) {
-                    armed = true
-                  }
+                  armed = true
                   break
                 }
 
                 val event = withTimeoutOrNull(remaining) { awaitPointerEvent() }
                 if (event == null) {
-                  if (canLongPressSplit) {
-                    armed = true
-                  }
+                  armed = true
                   break
                 }
 
                 val change =
                   event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
                 if (change == null || !change.pressed) {
-                  releasedEarly = true
+                  releaseWasConsumedByChild = change?.isConsumed == true
+                  releasedWithoutMove = true
                   break
                 }
                 velocityTracker.addPosition(change.uptimeMillis, change.position)
 
                 val dx = change.position.x - downPos.x
                 val dy = change.position.y - downPos.y
-                if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                if (hypot(dx, dy) > holdSlop) {
                   movedEarly = true
                   earlyDragX = dx
                   earlyDragY = dy
@@ -840,8 +951,10 @@ private fun MorphingFloatingPill(
 
               isHoldingIdle = false
 
-              if (releasedEarly) {
-                currentOnFocusOmnibox()
+              if (releasedWithoutMove) {
+                if (!releaseWasConsumedByChild) {
+                  currentOnFocusOmnibox()
+                }
                 return@awaitEachGesture
               }
 
@@ -859,11 +972,11 @@ private fun MorphingFloatingPill(
                     if (trackingCarousel) {
                       latestDx = dx
                       currentOnHorizontalTabDrag(dx)
-                    } else if (!trackingHeroFly && abs(dx) > abs(dy) * 1.15f && swipeEnabled && tabCount > 1 && abs(dx) > touchSlop) {
+                    } else if (!trackingHeroFly && abs(dx) > abs(dy) * 1.15f && currentSwipeEnabled && currentTabCount > 1 && abs(dx) > touchSlop) {
                       trackingCarousel = true
                       latestDx = dx
                       currentOnHorizontalTabDrag(dx)
-                    } else if (dy < -touchSlop && (trackingHeroFly || abs(dy) >= abs(dx)) && swipeUpOpenTabs) {
+                    } else if (dy < -touchSlop && (trackingHeroFly || abs(dy) >= abs(dx)) && currentSwipeUpOpenTabs) {
                       trackingHeroFly = true
                       latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
                       currentOnSwipeUpDragProgress(latestHeroProgress)
@@ -906,44 +1019,96 @@ private fun MorphingFloatingPill(
 
               if (armed) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                currentOnSplitArmChanged(true, 0f)
+                currentOnLongPressStateChanged(true, 0f, 0f)
                 var latestDragX = 0f
-                while (true) {
-                  val ev = awaitPointerEvent()
-                  val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
-                  if (ch == null || !ch.pressed) {
-                    if (latestDragX > splitThresholdPx) {
-                      haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                      currentOnTriggerSplitGesture(true)
-                    } else if (latestDragX < -splitThresholdPx) {
-                      haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                      currentOnTriggerSplitGesture(false)
+                var latestDragY = 0f
+                var trackingAiSheet = false
+                var latestAiProgress = 0f
+                val aiMaxPx = 160.dp.toPx().coerceAtLeast(130f)
+
+                try {
+                  while (true) {
+                    val ev = awaitPointerEvent()
+                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
+                    if (ch == null || !ch.pressed) {
+                      val velY = velocityTracker.calculateVelocity().y
+                      val resolvedDir =
+                        resolveLongPressDirection(
+                          dxPx = latestDragX,
+                          dyPx = latestDragY,
+                          canSplit = currentCanSplit,
+                          splitThresholdPx = currentSplitThresholdPx,
+                          aiThresholdPx = currentAiThresholdPx,
+                        )
+                      if (trackingAiSheet) {
+                        val completed =
+                          resolvedDir == OmniboxLongPressDirection.AI_UP ||
+                            latestAiProgress >= 0.28f ||
+                            velY < -650f
+                        if (completed) {
+                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                        trackingAiSheet = false
+                        currentOnAiSwipeEnd(completed, velY)
+                      } else {
+                        when (resolvedDir) {
+                          OmniboxLongPressDirection.AI_UP -> {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentOnAiSwipeEnd(true, velY)
+                          }
+                          OmniboxLongPressDirection.SPLIT_RIGHT -> {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentOnTriggerSplitGesture(true)
+                          }
+                          OmniboxLongPressDirection.SPLIT_LEFT -> {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentOnTriggerSplitGesture(false)
+                          }
+                          OmniboxLongPressDirection.NEUTRAL -> Unit
+                        }
+                      }
+                      break
                     }
-                    break
+                    ch.consume()
+                    velocityTracker.addPosition(ch.uptimeMillis, ch.position)
+                    latestDragX = ch.position.x - downPos.x
+                    latestDragY = ch.position.y - downPos.y
+                    currentOnLongPressStateChanged(true, latestDragX, latestDragY)
+
+                    if (
+                      trackingAiSheet ||
+                      (latestDragY < -touchSlop * 1.5f && abs(latestDragY) >= abs(latestDragX) * 0.85f)
+                    ) {
+                      trackingAiSheet = true
+                      latestAiProgress = ((-latestDragY) / aiMaxPx).coerceIn(0f, 1f)
+                      currentOnAiSwipeProgress(latestAiProgress)
+                    }
                   }
-                  ch.consume()
-                  latestDragX = ch.position.x - downPos.x
-                  currentOnSplitArmChanged(true, latestDragX)
+                } catch (t: Throwable) {
+                  if (trackingAiSheet) {
+                    currentOnAiSwipeEnd(false, 0f)
+                  }
+                  throw t
                 }
               }
             } finally {
               isHoldingIdle = false
-              currentOnSplitArmChanged(false, 0f)
+              currentOnLongPressStateChanged(false, 0f, 0f)
             }
           }
         }
       }
     }
 
-  // 바 전체 영역 세로 스와이프 (버튼 영역 포함 실시간 Hero Tab-Fly & 축소)
+  // 바 전체 영역 세로 스와이프 (주소창 외 좌/우 버튼 영역 포함 실시간 Hero Tab-Fly & 축소)
   val barVerticalSwipeModifier =
     if (isOmniboxFocused || isCollapsed) {
       Modifier
     } else {
-      Modifier.pointerInput(swipeUpOpenTabs) {
+      Modifier.pointerInput(isOmniboxGestureDisabled) {
         awaitEachGesture {
           val touchSlop = viewConfiguration.touchSlop
-          val down = awaitFirstDown(requireUnconsumed = false)
+          val down = awaitFirstDown(requireUnconsumed = true)
           val downPos = down.position
           val velocityTracker = VelocityTracker().apply {
             addPosition(down.uptimeMillis, down.position)
@@ -957,12 +1122,12 @@ private fun MorphingFloatingPill(
               val ev = awaitPointerEvent()
               val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
               if (ch == null || !ch.pressed) break
-              if (currentSplitHoldActive) break
+              if (currentLongPressActive) break
               velocityTracker.addPosition(ch.uptimeMillis, ch.position)
               if (ch.isConsumed && !trackingHeroFly) break
               val dx = ch.position.x - downPos.x
               val dy = ch.position.y - downPos.y
-              if (dy < -touchSlop * 1.5f && (trackingHeroFly || abs(dy) > abs(dx) * 1.3f) && swipeUpOpenTabs) {
+              if (dy < -touchSlop * 1.5f && (trackingHeroFly || abs(dy) > abs(dx) * 1.3f) && currentSwipeUpOpenTabs) {
                 trackingHeroFly = true
                 ch.consume()
                 latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
@@ -1181,17 +1346,44 @@ private fun MorphingFloatingPill(
           Surface(
             shape = omniboxShape,
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = capsuleAlpha.coerceIn(0f, 1f)),
+            border =
+              if (armGlowProgress > 0.01f) {
+                BorderStroke(
+                  width = (1.5f + 1.0f * armGlowProgress).dp,
+                  color = MaterialTheme.colorScheme.primary.copy(alpha = 0.92f * armGlowProgress),
+                )
+              } else {
+                null
+              },
             modifier =
               Modifier.weight(1f)
                 .zIndex(2f)
                 .height(omniboxHeight)
+                .graphicsLayer {
+                  val glowScale = 1f + 0.025f * armGlowProgress
+                  scaleX = glowScale
+                  scaleY = glowScale
+                }
+                .then(
+                  if (armGlowProgress > 0.01f) {
+                    Modifier.shadow(
+                      elevation = (14f * armGlowProgress).dp,
+                      shape = omniboxShape,
+                      ambientColor = MaterialTheme.colorScheme.primary,
+                      spotColor = MaterialTheme.colorScheme.primary,
+                      clip = false,
+                    )
+                  } else {
+                    Modifier
+                  }
+                )
                 .testTag(if (isSplitCompact) "omnibox_trigger_$paneIndex" else "omnibox_trigger")
                 .clip(omniboxShape)
                 .floatingBarPerimeterProgress(
                   isActive = holdProgress > 0.02f,
                   progressFraction = holdProgress,
                   cornerRadiusDp = omniboxCornerDp,
-                  accentColor = MaterialTheme.colorScheme.tertiary,
+                  accentColor = MaterialTheme.colorScheme.primary,
                   strokeWidthDp = 2.dp,
                 )
                 .then(omniboxGestureModifier),

@@ -45,9 +45,12 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChromeReaderMode
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentPaste
@@ -57,6 +60,7 @@ import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FindInPage
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -64,6 +68,8 @@ import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.HideImage
 import androidx.compose.material.icons.outlined.Javascript
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Mic
@@ -88,8 +94,11 @@ import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material.icons.outlined.Swipe
 import androidx.compose.material.icons.outlined.Tab
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.WebAsset
 import androidx.compose.material.icons.outlined.ZoomIn
 import androidx.compose.material3.Button
@@ -116,15 +125,23 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.mybrowser.appui.foldable.FoldablePostureState
+import com.mybrowser.appui.network.AiConfigUi
+import com.mybrowser.appui.network.AiConnectionTestResult
+import com.mybrowser.appui.network.AiExecutionMode
+import com.mybrowser.appui.network.AiFoldableLayout
+import com.mybrowser.appui.network.AiProviderPresetUi
 import com.mybrowser.appui.network.DohLookupResult
 import com.mybrowser.appui.network.DohProviderInfo
 import com.mybrowser.appui.viewmodel.BlockerLevel
@@ -147,12 +164,13 @@ enum class SettingsPillar(
 ) {
   DESIGN("디자인", Icons.Outlined.Palette),
   CUSTOMIZATION("사용자화", Icons.Outlined.Tune),
+  AI("AI", Icons.Outlined.AutoAwesome),
   GENERAL_PRIVACY("일반 설정", Icons.Outlined.Security),
   SITE_SETTINGS("사이트 설정", Icons.Outlined.WebAsset),
 }
 
 /**
- * 아이콘 중심 4대 설정 허브:
+ * 아이콘 중심 5대 설정 허브:
  * - 펼침 1:1.4 화면: 좌측 아이콘 내비게이션 레일 + 우측 20dp 카드 디테일 (2패널 마스터-디테일)
  * - 접힘 커버 화면: 드릴다운 스프링 전환
  */
@@ -170,6 +188,11 @@ fun SettingsHubOverlay(
   dohProviders: List<DohProviderInfo>,
   isProbingDoh: Boolean,
   lastDohLookup: DohLookupResult?,
+  aiConfig: AiConfigUi = AiConfigUi(),
+  aiProviderPresets: List<AiProviderPresetUi> = emptyList(),
+  isTestingAiConnection: Boolean = false,
+  aiConnectionTestResult: AiConnectionTestResult? = null,
+  initialPillar: SettingsPillar = SettingsPillar.DESIGN,
   statusBannerMessage: String?,
   onUpdateSetting: (key: String, value: String) -> Unit,
   onUpdateDesignParam: (key: String, value: String) -> Unit,
@@ -186,12 +209,17 @@ fun SettingsHubOverlay(
   onSetDomainSiteOverride: (domain: String, key: String, value: String) -> Unit,
   onResetDomainOverrides: (domain: String) -> Unit,
   onRunDohProbe: (String) -> Unit,
+  onUpdateAiConfig: (key: String, value: String) -> Unit = { _, _ -> },
+  onResetAiConfigDefaults: () -> Unit = {},
+  onTestAiConnection: () -> Unit = {},
   onOpenLibrary: (SpatialDiveOrigin) -> Unit,
   onDismiss: () -> Unit,
 ) {
   val isMasterDetail = postureState.supportsDualPane
-  var selectedPillar by remember { mutableStateOf(SettingsPillar.DESIGN) }
-  var isDetailOpenOnCover by remember { mutableStateOf(false) }
+  var selectedPillar by remember(initialPillar) { mutableStateOf(initialPillar) }
+  var isDetailOpenOnCover by remember(initialPillar) {
+    mutableStateOf(initialPillar != SettingsPillar.DESIGN)
+  }
   var coverDetailOrigin by remember { mutableStateOf(SpatialDiveOrigin()) }
   val coverDiveAnim = remember { Animatable(0f) }
 
@@ -335,6 +363,10 @@ fun SettingsHubOverlay(
               dohProviders = dohProviders,
               isProbingDoh = isProbingDoh,
               lastDohLookup = lastDohLookup,
+              aiConfig = aiConfig,
+              aiProviderPresets = aiProviderPresets,
+              isTestingAiConnection = isTestingAiConnection,
+              aiConnectionTestResult = aiConnectionTestResult,
               onUpdateSetting = onUpdateSetting,
               onUpdateDesignParam = onUpdateDesignParam,
               onResetDesignDefaults = onResetDesignDefaults,
@@ -350,6 +382,9 @@ fun SettingsHubOverlay(
               onSetDomainSiteOverride = onSetDomainSiteOverride,
               onResetDomainOverrides = onResetDomainOverrides,
               onRunDohProbe = onRunDohProbe,
+              onUpdateAiConfig = onUpdateAiConfig,
+              onResetAiConfigDefaults = onResetAiConfigDefaults,
+              onTestAiConnection = onTestAiConnection,
               modifier = Modifier.fillMaxSize(),
             )
           }
@@ -417,6 +452,10 @@ fun SettingsHubOverlay(
                 dohProviders = dohProviders,
                 isProbingDoh = isProbingDoh,
                 lastDohLookup = lastDohLookup,
+                aiConfig = aiConfig,
+                aiProviderPresets = aiProviderPresets,
+                isTestingAiConnection = isTestingAiConnection,
+                aiConnectionTestResult = aiConnectionTestResult,
                 onUpdateSetting = onUpdateSetting,
                 onUpdateDesignParam = onUpdateDesignParam,
                 onResetDesignDefaults = onResetDesignDefaults,
@@ -432,6 +471,9 @@ fun SettingsHubOverlay(
                 onSetDomainSiteOverride = onSetDomainSiteOverride,
                 onResetDomainOverrides = onResetDomainOverrides,
                 onRunDohProbe = onRunDohProbe,
+                onUpdateAiConfig = onUpdateAiConfig,
+                onResetAiConfigDefaults = onResetAiConfigDefaults,
+                onTestAiConnection = onTestAiConnection,
                 modifier = Modifier.fillMaxSize(),
               )
             }
@@ -559,6 +601,10 @@ private fun SettingsDetailPane(
   dohProviders: List<DohProviderInfo>,
   isProbingDoh: Boolean,
   lastDohLookup: DohLookupResult?,
+  aiConfig: AiConfigUi,
+  aiProviderPresets: List<AiProviderPresetUi>,
+  isTestingAiConnection: Boolean,
+  aiConnectionTestResult: AiConnectionTestResult?,
   onUpdateSetting: (key: String, value: String) -> Unit,
   onUpdateDesignParam: (key: String, value: String) -> Unit,
   onResetDesignDefaults: () -> Unit,
@@ -574,6 +620,9 @@ private fun SettingsDetailPane(
   onSetDomainSiteOverride: (domain: String, key: String, value: String) -> Unit,
   onResetDomainOverrides: (domain: String) -> Unit,
   onRunDohProbe: (String) -> Unit,
+  onUpdateAiConfig: (key: String, value: String) -> Unit,
+  onResetAiConfigDefaults: () -> Unit,
+  onTestAiConnection: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val bottomInset =
@@ -594,6 +643,19 @@ private fun SettingsDetailPane(
           onResetDesignDefaults = onResetDesignDefaults,
           onSelectAlignment = onSelectAlignment,
           onToggleAutoMinimize = onToggleAutoMinimize,
+        )
+      }
+
+      SettingsPillar.AI -> {
+        aiSettingsItems(
+          aiConfig = aiConfig,
+          providerPresets = aiProviderPresets,
+          designConfig = designConfig,
+          isTestingAiConnection = isTestingAiConnection,
+          aiConnectionTestResult = aiConnectionTestResult,
+          onUpdateAiConfig = onUpdateAiConfig,
+          onResetAiConfigDefaults = onResetAiConfigDefaults,
+          onTestAiConnection = onTestAiConnection,
         )
       }
 
@@ -1101,6 +1163,40 @@ private fun SettingsDetailPane(
               onCheckedChange = { onUpdateSetting("backgroundTabSleep", it.toString()) },
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            SettingsIconSwitchRow(
+              icon = Icons.Outlined.Tab,
+              title = "주변 탭 상시 유지",
+              checked = settings.adjacentTabKeepAlive,
+              onCheckedChange = { onUpdateSetting("adjacentTabKeepAlive", it.toString()) },
+              modifier = Modifier.testTag("settings_adjacent_keep_alive_switch"),
+            )
+            Text(
+              text = "상시 유지할 좌우 탭 개수",
+              style = MaterialTheme.typography.labelLarge,
+              color =
+                if (settings.adjacentTabKeepAlive) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+            )
+            Row(
+              modifier =
+                Modifier.fillMaxWidth()
+                  .graphicsLayer { alpha = if (settings.adjacentTabKeepAlive) 1f else 0.45f },
+              horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+            ) {
+              listOf(1, 2, 3).forEach { count ->
+                IconSegmentTile(
+                  icon = Icons.Outlined.Tab,
+                  label = "좌우 ${count}개",
+                  selected = settings.adjacentTabKeepAliveCount == count,
+                  enabled = settings.adjacentTabKeepAlive,
+                  onClick = { onUpdateSetting("adjacentTabKeepAliveCount", count.toString()) },
+                  modifier =
+                    Modifier.weight(1f)
+                      .testTag("settings_adjacent_keep_alive_count_$count"),
+                )
+              }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             Text("비활성 탭 자동 정리", style = MaterialTheme.typography.labelLarge)
             FlowRow(
               horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
@@ -1464,9 +1560,11 @@ internal fun IconSegmentTile(
   selected: Boolean,
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
+  enabled: Boolean = true,
 ) {
   SpringPressSurface(
     onClick = onClick,
+    enabled = enabled,
     selected = selected,
     shape = LocalDesignConfig.current.cardInnerShape(),
     modifier = modifier.height(64.dp),
@@ -1504,9 +1602,10 @@ internal fun SettingsIconSwitchRow(
   title: String,
   checked: Boolean,
   onCheckedChange: (Boolean) -> Unit,
+  modifier: Modifier = Modifier,
 ) {
   Row(
-    modifier = Modifier.fillMaxWidth(),
+    modifier = modifier.fillMaxWidth(),
     horizontalArrangement = Arrangement.SpaceBetween,
     verticalAlignment = Alignment.CenterVertically,
   ) {

@@ -42,6 +42,8 @@ class SettingsStoreImpl : SettingsStoreContract {
   private var confirmExternalApp: Boolean = true
   private var startupBehavior: String = "SPEED_DIAL"
   private var backgroundTabSleep: Boolean = true
+  private var adjacentTabKeepAlive: Boolean = true
+  private var adjacentTabKeepAliveCount: Int = 1 // 1 | 2 | 3
   private var autoCloseDays: Int = 0 // 0 | 1 | 7 | 30
   private var downloadTreeUri: String = ""
   private var confirmBeforeDownload: Boolean = true
@@ -91,6 +93,10 @@ class SettingsStoreImpl : SettingsStoreContract {
     extractBoolean(rawJson, "confirmExternalApp")?.let { confirmExternalApp = it }
     extractString(rawJson, "startupBehavior")?.let { applyKeyValueLocked("startupBehavior", it) }
     extractBoolean(rawJson, "backgroundTabSleep")?.let { backgroundTabSleep = it }
+    extractBoolean(rawJson, "adjacentTabKeepAlive")?.let { adjacentTabKeepAlive = it }
+    extractInt(rawJson, "adjacentTabKeepAliveCount")?.let {
+      adjacentTabKeepAliveCount = it.coerceIn(1, 3)
+    }
     extractInt(rawJson, "autoCloseDays")?.let { applyKeyValueLocked("autoCloseDays", it.toString()) }
     extractString(rawJson, "downloadTreeUri")?.let { downloadTreeUri = it }
     extractBoolean(rawJson, "confirmBeforeDownload")?.let { confirmBeforeDownload = it }
@@ -128,6 +134,8 @@ class SettingsStoreImpl : SettingsStoreContract {
     confirmExternalApp = true
     startupBehavior = "SPEED_DIAL"
     backgroundTabSleep = true
+    adjacentTabKeepAlive = true
+    adjacentTabKeepAliveCount = 1
     autoCloseDays = 0
     downloadTreeUri = ""
     confirmBeforeDownload = true
@@ -190,6 +198,9 @@ class SettingsStoreImpl : SettingsStoreContract {
       "startupBehavior" ->
         if (value in setOf("RESTORE_TABS", "SPEED_DIAL", "BLANK_PAGE")) startupBehavior = value
       "backgroundTabSleep" -> value.toBooleanStrictOrNull()?.let { backgroundTabSleep = it }
+      "adjacentTabKeepAlive" -> value.toBooleanStrictOrNull()?.let { adjacentTabKeepAlive = it }
+      "adjacentTabKeepAliveCount" ->
+        value.toIntOrNull()?.let { adjacentTabKeepAliveCount = it.coerceIn(1, 3) }
       "autoCloseDays" ->
         value.toIntOrNull()?.let { if (it in setOf(0, 1, 7, 30)) autoCloseDays = it }
       "downloadTreeUri" -> downloadTreeUri = value
@@ -198,7 +209,7 @@ class SettingsStoreImpl : SettingsStoreContract {
   }
 
   private fun serializeLocked(): String {
-    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"forceZoomEnabled":$forceZoomEnabled,"expandBarOnUrlEdit":$expandBarOnUrlEdit,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"tabViewMode":${JsonMini.quote(tabViewMode)},"defaultTabSortMode":${JsonMini.quote(defaultTabSortMode)},"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
+    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"forceZoomEnabled":$forceZoomEnabled,"expandBarOnUrlEdit":$expandBarOnUrlEdit,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"tabViewMode":${JsonMini.quote(tabViewMode)},"defaultTabSortMode":${JsonMini.quote(defaultTabSortMode)},"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"adjacentTabKeepAlive":$adjacentTabKeepAlive,"adjacentTabKeepAliveCount":$adjacentTabKeepAliveCount,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
   }
 
   private fun extractString(json: String, key: String): String? =

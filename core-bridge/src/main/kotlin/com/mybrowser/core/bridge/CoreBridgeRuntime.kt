@@ -18,12 +18,13 @@ class CoreBridgeRuntime(
   val settingsStore: SettingsStoreContract = SettingsStoreImpl(),
   val designConfig: DesignConfigContract = DesignConfigImpl(),
   val sitePermissions: SitePermissionsContract = SitePermissionsImpl(),
+  val aiBridge: AiBridgeContract = AiBridgeImpl(),
 ) {
   val abiInfo: EngineAbiInfo =
     EngineAbiInfo(
       abiVersion = 1,
       backendKind = "kotlin-ffi-stub",
       featuresCsv =
-        "url-router,12b-blocker,rfc1035-doh,tab-fsm,frecency-index,toolbar-cfg,design-cfg,4pillar-settings,site-policy",
+        "url-router,12b-blocker,rfc1035-doh,tab-fsm,frecency-index,toolbar-cfg,design-cfg,5pillar-settings,site-policy,ai-cli-bridge",
     )
 }

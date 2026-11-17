@@ -443,6 +443,50 @@ class AospWebViewPool(
     }
   }
 
+  fun hasWebView(tabId: String): Boolean = webViews.containsKey(tabId)
+
+  fun getLastLoadedUrl(tabId: String): String? = lastLoadedUrl[tabId]
+
+  fun preloadTabIfNeeded(
+    context: Context,
+    tabId: String,
+    targetUrl: String,
+    renderPolicy: WebRenderPolicy,
+    onNavigationUpdate: (url: String, title: String, isLoading: Boolean, progress: Int, caps: WebViewNavCapabilities) -> Unit,
+    onRequestBlocked: () -> Unit,
+    onScrollDelta: (Int) -> Unit,
+    onPermissionChallenge: (WebSitePermissionChallenge) -> Unit,
+    onExternalAppRequest: (ExternalAppLaunchRequest) -> Unit = {},
+    onDownloadRequest: (PendingDownloadRequest) -> Unit = {},
+    onIconUpdate: (Bitmap?) -> Unit = {},
+  ) {
+    if (targetUrl.isBlank() || targetUrl == "about:mb" || targetUrl == "about:blank") return
+    val existing = webViews[tabId]
+    if (existing != null) {
+      if (pausedTabs.remove(tabId)) {
+        existing.onResume()
+      }
+      syncTargetUrlIfNeeded(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
+      return
+    }
+    val wv =
+      getOrCreate(
+        context = context,
+        tabId = tabId,
+        renderPolicy = renderPolicy,
+        onNavigationUpdate = onNavigationUpdate,
+        onRequestBlocked = onRequestBlocked,
+        onScrollDelta = onScrollDelta,
+        onPermissionChallenge = onPermissionChallenge,
+        onExternalAppRequest = onExternalAppRequest,
+        onDownloadRequest = onDownloadRequest,
+        onIconUpdate = onIconUpdate,
+      )
+    if (wv.url.isNullOrBlank() && lastLoadedUrl[tabId] != targetUrl) {
+      loadUrl(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
+    }
+  }
+
   fun syncTargetUrlIfNeeded(tabId: String, targetUrl: String, sendDntGpc: Boolean = true) {
     if (targetUrl == "about:mb" || targetUrl == "about:blank") return
     val prevLast = lastLoadedUrl[tabId]
@@ -704,7 +748,7 @@ fun AospWebViewViewport(
               onIconUpdate = onIconUpdate,
             )
           (wv.parent as? ViewGroup)?.removeView(wv)
-          if (targetUrl != "about:mb" && targetUrl != "about:blank" && wv.url.isNullOrBlank()) {
+          if (targetUrl != "about:mb" && targetUrl != "about:blank" && wv.url.isNullOrBlank() && webViewPool.getLastLoadedUrl(tabId) != targetUrl) {
             webViewPool.loadUrl(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
           } else {
             webViewPool.syncTargetUrlIfNeeded(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)

@@ -30,8 +30,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -55,7 +62,7 @@ fun TabletopDeck(
   onOpenOmnibox: () -> Unit,
   onSelectTab: (String) -> Unit,
   onNewTab: () -> Unit,
-  onNavigateBookmark: (String) -> Unit,
+  onNavigateBookmark: (String, SpatialDiveOrigin) -> Unit,
   onOpenLibrary: () -> Unit,
   onOpenInspector: () -> Unit,
   modifier: Modifier = Modifier,
@@ -230,12 +237,15 @@ fun TabletopDeck(
       }
 
       // 빠른 북마크 스트립
+      val cornerDp = LocalDesignConfig.current.cardCornerRadiusDp
       LazyRow(horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1)) {
         items(bookmarks.take(6), key = { it.url }) { bookmark ->
+          var chipBounds by remember { mutableStateOf(Rect.Zero) }
           SpringPressSurface(
-            onClick = { onNavigateBookmark(bookmark.url) },
+            onClick = { onNavigateBookmark(bookmark.url, SpatialDiveOrigin(chipBounds, cornerDp)) },
             shape = BrowserRadii.CardInnerShape,
             unselectedColor = MaterialTheme.colorScheme.background,
+            modifier = Modifier.onGloballyPositioned { chipBounds = it.boundsInRoot() },
           ) {
             Text(
               text = bookmark.title,

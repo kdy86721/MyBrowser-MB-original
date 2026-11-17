@@ -20,6 +20,12 @@ import com.mybrowser.appui.data.BookmarkEntity
 import com.mybrowser.appui.data.BrowserDatabase
 import com.mybrowser.appui.data.BrowserRepository
 import com.mybrowser.appui.data.HistoryEntity
+import com.mybrowser.appui.network.AiChatMessageUi
+import com.mybrowser.appui.network.AiCliExecutor
+import com.mybrowser.appui.network.AiConfigUi
+import com.mybrowser.appui.network.AiConnectionTestResult
+import com.mybrowser.appui.network.AiProviderPresetUi
+import com.mybrowser.appui.network.AiStreamEvent
 import com.mybrowser.appui.network.DohLookupResult
 import com.mybrowser.appui.network.DohNetworkClient
 import com.mybrowser.appui.network.DohProviderInfo
@@ -275,10 +281,35 @@ data class BrowserSettingsUi(
   val confirmExternalApp: Boolean = true,
   val startupBehavior: StartupBehavior = StartupBehavior.SPEED_DIAL,
   val backgroundTabSleep: Boolean = true,
+  val adjacentTabKeepAlive: Boolean = true,
+  val adjacentTabKeepAliveCount: Int = 1,
   val autoCloseDays: Int = 0,
   val downloadTreeUri: String = "",
   val confirmBeforeDownload: Boolean = true,
 )
+
+fun computeKeepAliveTabIds(
+  tabs: List<TabUiModel>,
+  visibleTabIds: Set<String>,
+  keepAliveEnabled: Boolean,
+  keepAliveCount: Int,
+): Set<String> {
+  if (!keepAliveEnabled || tabs.isEmpty() || visibleTabIds.isEmpty()) return visibleTabIds
+  val n = keepAliveCount.coerceIn(1, 3)
+  val keep = linkedSetOf<String>()
+  keep.addAll(visibleTabIds)
+  visibleTabIds.forEach { visId ->
+    val activeIdx = tabs.indexOfFirst { it.id == visId }
+    if (activeIdx >= 0) {
+      val start = (activeIdx - n).coerceAtLeast(0)
+      val end = (activeIdx + n).coerceAtMost(tabs.lastIndex)
+      for (i in start..end) {
+        keep.add(tabs[i].id)
+      }
+    }
+  }
+  return keep
+}
 
 // [RUST-MIGRATION-TARGET]
 @Immutable
@@ -364,6 +395,17 @@ data class BrowserUiState(
   val dohProviders: List<DohProviderInfo> = emptyList(),
   val isProbingDoh: Boolean = false,
   val lastDohLookup: DohLookupResult? = null,
+  val aiConfig: AiConfigUi = AiConfigUi(),
+  val aiProviderPresets: List<AiProviderPresetUi> = emptyList(),
+  val isAiSheetOpen: Boolean = false,
+  val aiSheetPaneIndex: Int = 0,
+  val aiAttachedUrl: String = "",
+  val aiAttachedTitle: String = "",
+  val aiDraftInput: String = "",
+  val aiMessages: List<AiChatMessageUi> = emptyList(),
+  val isAiStreaming: Boolean = false,
+  val isTestingAiConnection: Boolean = false,
+  val aiConnectionTestResult: AiConnectionTestResult? = null,
   val statusBannerMessage: String? = null,
   val snackbarNotification: SnackbarNotification? = null,
   val abiInfo: EngineMetaUi = EngineMetaUi(),
@@ -393,6 +435,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
       dao = BrowserDatabase.getInstance(appContext).browserDao(),
     )
   private val dohClient = DohNetworkClient(coreBridge.dohResolver)
+  private val aiCliExecutor = AiCliExecutor(coreBridge.aiBridge)
   val webViewPool = AospWebViewPool(coreBridge.urlEngine, coreBridge.trackerBlocker)
 
   private val navCapabilitiesMap = mutableMapOf<String, WebViewNavCapabilities>()
@@ -401,12 +444,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   private var accumulatedScrollDyDp = 0f
   private var startupApplied = false
   private var omniboxSearchJob: Job? = null
+  private var aiStreamJob: Job? = null
 
   private val _uiState =
     MutableStateFlow(
       BrowserUiState(
         searchEngines = parseSearchEngines(coreBridge.urlEngine.getSearchEnginesJson()),
         dohProviders = dohClient.listProviders(),
+        aiProviderPresets = aiCliExecutor.listPresets(),
+        aiConfig = aiCliExecutor.parseConfig(),
         abiInfo = coreBridge.abiInfo.toMetaUi(),
       )
     )
@@ -418,6 +464,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     syncDesignConfigFromCore()
     syncSettingsFromCore()
     syncSitePermissionsFromCore()
+    syncAiConfigFromCore()
 
     viewModelScope.launch { repository.ensureDefaultBookmarks() }
 
@@ -450,6 +497,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
       if (!prefs.sitePermissionsJson.isNullOrBlank()) {
         coreBridge.sitePermissions.restoreStateJson(prefs.sitePermissionsJson)
         syncSitePermissionsFromCore()
+      }
+      if (!prefs.aiConfigJson.isNullOrBlank()) {
+        coreBridge.aiBridge.restoreAiConfigJson(prefs.aiConfigJson)
+        syncAiConfigFromCore()
       }
 
       val currentSettings = _uiState.value.settings
@@ -514,7 +565,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
       add(state.primaryTabId)
       if (state.splitMode) state.secondaryTabId?.let { add(it) }
     }
-    webViewPool.onAppForegrounded(visible, state.settings.backgroundTabSleep)
+    val keepAliveIds =
+      computeKeepAliveTabIds(
+        tabs = state.tabs,
+        visibleTabIds = visible,
+        keepAliveEnabled = state.settings.adjacentTabKeepAlive,
+        keepAliveCount = state.settings.adjacentTabKeepAliveCount,
+      )
+    webViewPool.onAppForegrounded(keepAliveIds, state.settings.backgroundTabSleep)
+    preloadKeepAliveTabs(state.tabs, visible, keepAliveIds, state.settings)
   }
 
   fun resolveRenderPolicyForTab(tabUrl: String): WebRenderPolicy {
@@ -1377,13 +1436,19 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
       syncFromCoreBridge()
     }
     syncSettingsFromCore()
-    if (key == "backgroundTabSleep") {
+    if (
+      key == "backgroundTabSleep" ||
+        key == "adjacentTabKeepAlive" ||
+        key == "adjacentTabKeepAliveCount"
+    ) {
       val state = _uiState.value
-      val visible = buildSet {
-        add(state.primaryTabId)
-        if (state.splitMode) state.secondaryTabId?.let { add(it) }
-      }
-      webViewPool.syncVisibleTabs(visible, state.settings.backgroundTabSleep)
+      syncActiveAndKeepAliveWebViews(
+        tabs = state.tabs,
+        primaryId = state.primaryTabId,
+        secondaryId = state.secondaryTabId,
+        splitMode = state.splitMode,
+        settings = state.settings,
+      )
     }
     viewModelScope.launch { repository.setSettingsStoreJson(updatedJson) }
   }
@@ -1463,6 +1528,216 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         )
       _uiState.update { it.copy(isProbingDoh = false, lastDohLookup = result) }
     }
+  }
+
+  // --- Pillar 5 / Omnibox Long-Press Up: Multi-AI CLI Bridge & Chat Sheet ---
+  fun updateAiConfig(key: String, value: String) {
+    val updatedJson = coreBridge.aiBridge.updateAiConfig(key, value)
+    syncAiConfigFromCore()
+    _uiState.update { it.copy(aiConnectionTestResult = null) }
+    viewModelScope.launch { repository.setAiConfigJson(updatedJson) }
+  }
+
+  fun resetAiConfigDefaults() {
+    val updatedJson = coreBridge.aiBridge.resetAiConfigDefaults()
+    syncAiConfigFromCore()
+    _uiState.update { it.copy(aiConnectionTestResult = null) }
+    viewModelScope.launch { repository.setAiConfigJson(updatedJson) }
+  }
+
+  fun testAiConnection() {
+    if (_uiState.value.isTestingAiConnection) return
+    _uiState.update { it.copy(isTestingAiConnection = true, aiConnectionTestResult = null) }
+    viewModelScope.launch {
+      val result = aiCliExecutor.testConnection()
+      _uiState.update { it.copy(isTestingAiConnection = false, aiConnectionTestResult = result) }
+    }
+  }
+
+  fun prepareAiSheetForPane(paneIndex: Int = _uiState.value.activePane) {
+    val tab = tabForPane(paneIndex)
+    val hasWebUrl =
+      tab != null &&
+        tab.url.isNotBlank() &&
+        tab.url != "about:mb" &&
+        tab.url != "about:blank"
+    val pageUrl = if (hasWebUrl) tab!!.url else ""
+    val pageTitle = if (hasWebUrl) tab!!.title.ifBlank { tab.displayHost } else ""
+    val template =
+      _uiState.value.aiConfig.defaultPromptTemplate.trim().ifBlank { "이 페이지 핵심 내용 요약해 줘" }
+    val prefilled = if (hasWebUrl) "$template\n$pageUrl" else template
+    _uiState.update {
+      it.copy(
+        aiSheetPaneIndex = paneIndex,
+        aiAttachedUrl = pageUrl,
+        aiAttachedTitle = pageTitle,
+        aiDraftInput = prefilled,
+      )
+    }
+  }
+
+  fun openAiSheet(
+    paneIndex: Int = _uiState.value.activePane,
+    fromDragGesture: Boolean = false,
+  ) {
+    prepareAiSheetForPane(paneIndex)
+    _uiState.update {
+      it.copy(
+        isAiSheetOpen = true,
+        isOmniboxFocused = false,
+        activeOverlay = BrowserOverlay.NONE,
+      )
+    }
+    if (fromDragGesture && _uiState.value.aiConfig.autoSendOnDrag && !_uiState.value.isAiStreaming) {
+      sendAiMessage()
+    }
+  }
+
+  fun closeAiSheet() {
+    _uiState.update { it.copy(isAiSheetOpen = false) }
+  }
+
+  fun updateAiDraft(text: String) {
+    _uiState.update { it.copy(aiDraftInput = text) }
+  }
+
+  fun detachAiPageContext() {
+    val currentUrl = _uiState.value.aiAttachedUrl
+    _uiState.update { state ->
+      val cleanedDraft =
+        if (currentUrl.isNotBlank()) {
+          state.aiDraftInput.replace("\n$currentUrl", "").replace(currentUrl, "").trim()
+        } else {
+          state.aiDraftInput
+        }
+      state.copy(
+        aiAttachedUrl = "",
+        aiAttachedTitle = "",
+        aiDraftInput = cleanedDraft,
+      )
+    }
+  }
+
+  fun clearAiConversation() {
+    aiStreamJob?.cancel()
+    aiStreamJob = null
+    _uiState.update { it.copy(aiMessages = emptyList(), isAiStreaming = false) }
+  }
+
+  fun stopAiStreaming() {
+    aiStreamJob?.cancel()
+    aiStreamJob = null
+    _uiState.update { state ->
+      state.copy(
+        isAiStreaming = false,
+        aiMessages =
+          state.aiMessages.map { msg ->
+            if (msg.isStreaming) msg.copy(isStreaming = false) else msg
+          },
+      )
+    }
+  }
+
+  fun sendAiMessage(overrideInput: String? = null) {
+    val state = _uiState.value
+    if (state.isAiStreaming) return
+    val rawText = (overrideInput ?: state.aiDraftInput).trim()
+    if (rawText.isBlank()) return
+
+    val pageUrl = state.aiAttachedUrl
+    val pageTitle = state.aiAttachedTitle
+    val userMsgId = "ai-u-${System.currentTimeMillis()}"
+    val assistantMsgId = "ai-a-${System.currentTimeMillis() + 1}"
+    val userMsg =
+      AiChatMessageUi(
+        id = userMsgId,
+        isUser = true,
+        text = rawText,
+        attachedUrl = pageUrl,
+        attachedTitle = pageTitle,
+      )
+    val assistantPlaceholder =
+      AiChatMessageUi(
+        id = assistantMsgId,
+        isUser = false,
+        text = "",
+        isStreaming = true,
+      )
+
+    _uiState.update {
+      it.copy(
+        aiMessages = it.aiMessages + userMsg + assistantPlaceholder,
+        aiDraftInput = "",
+        isAiStreaming = true,
+      )
+    }
+
+    aiStreamJob?.cancel()
+    aiStreamJob =
+      viewModelScope.launch {
+        aiCliExecutor.streamCompletion(pageUrl, pageTitle, rawText).collect { event ->
+          when (event) {
+            is AiStreamEvent.Delta -> {
+              _uiState.update { s ->
+                s.copy(
+                  aiMessages =
+                    s.aiMessages.map { msg ->
+                      if (msg.id == assistantMsgId) {
+                        msg.copy(text = msg.text + event.chunk, isStreaming = true)
+                      } else {
+                        msg
+                      }
+                    }
+                )
+              }
+            }
+
+            is AiStreamEvent.Error -> {
+              _uiState.update { s ->
+                s.copy(
+                  isAiStreaming = false,
+                  aiMessages =
+                    s.aiMessages.map { msg ->
+                      if (msg.id == assistantMsgId) {
+                        val combined =
+                          if (msg.text.isBlank()) event.message
+                          else "${msg.text}\n\n[오류] ${event.message}"
+                        msg.copy(text = combined, isStreaming = false, isError = true)
+                      } else {
+                        msg
+                      }
+                    },
+                )
+              }
+            }
+
+            AiStreamEvent.Completed -> {
+              _uiState.update { s ->
+                s.copy(
+                  isAiStreaming = false,
+                  aiMessages =
+                    s.aiMessages.map { msg ->
+                      if (msg.id == assistantMsgId) msg.copy(isStreaming = false) else msg
+                    },
+                )
+              }
+            }
+          }
+        }
+        _uiState.update { s ->
+          s.copy(
+            isAiStreaming = false,
+            aiMessages =
+              s.aiMessages.map { msg ->
+                if (msg.id == assistantMsgId && msg.isStreaming) msg.copy(isStreaming = false) else msg
+              },
+          )
+        }
+      }
+  }
+
+  private fun syncAiConfigFromCore() {
+    _uiState.update { it.copy(aiConfig = aiCliExecutor.parseConfig()) }
   }
 
   fun showOverlay(overlay: BrowserOverlay, libraryInitialTab: Int = 0) {
@@ -1585,6 +1860,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             startupBehavior =
               StartupBehavior.fromId(obj.optString("startupBehavior", "SPEED_DIAL")),
             backgroundTabSleep = obj.optBoolean("backgroundTabSleep", true),
+            adjacentTabKeepAlive = obj.optBoolean("adjacentTabKeepAlive", true),
+            adjacentTabKeepAliveCount = obj.optInt("adjacentTabKeepAliveCount", 1).coerceIn(1, 3),
             autoCloseDays = obj.optInt("autoCloseDays", 0),
             downloadTreeUri = obj.optString("downloadTreeUri", ""),
             confirmBeforeDownload = obj.optBoolean("confirmBeforeDownload", true),
@@ -1688,11 +1965,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
       }
     }
 
-    val visibleIds = buildSet {
-      add(primaryId)
-      if (splitMode && secondaryId != null) add(secondaryId)
-    }
-    webViewPool.syncVisibleTabs(visibleIds, _uiState.value.settings.backgroundTabSleep)
+    val currentSettings = _uiState.value.settings
+    syncActiveAndKeepAliveWebViews(
+      tabs = tabs,
+      primaryId = primaryId,
+      secondaryId = secondaryId,
+      splitMode = splitMode,
+      settings = currentSettings,
+    )
 
     _uiState.update {
       it.copy(
@@ -1710,6 +1990,63 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     if (persistTabs) {
       persistTabSnapshot()
+    }
+  }
+
+  private fun syncActiveAndKeepAliveWebViews(
+    tabs: List<TabUiModel>,
+    primaryId: String,
+    secondaryId: String?,
+    splitMode: Boolean,
+    settings: BrowserSettingsUi,
+  ) {
+    val visibleIds = buildSet {
+      add(primaryId)
+      if (splitMode && secondaryId != null) add(secondaryId)
+    }
+    val keepAliveIds =
+      computeKeepAliveTabIds(
+        tabs = tabs,
+        visibleTabIds = visibleIds,
+        keepAliveEnabled = settings.adjacentTabKeepAlive,
+        keepAliveCount = settings.adjacentTabKeepAliveCount,
+      )
+    webViewPool.syncVisibleTabs(keepAliveIds, settings.backgroundTabSleep)
+    preloadKeepAliveTabs(tabs, visibleIds, keepAliveIds, settings)
+  }
+
+  private fun preloadKeepAliveTabs(
+    tabs: List<TabUiModel>,
+    visibleIds: Set<String>,
+    keepAliveIds: Set<String>,
+    settings: BrowserSettingsUi,
+  ) {
+    if (!settings.adjacentTabKeepAlive) return
+    val tabsById = tabs.associateBy { it.id }
+    keepAliveIds.forEach { tabId ->
+      if (tabId in visibleIds) return@forEach
+      val tab = tabsById[tabId] ?: return@forEach
+      if (tab.url.startsWith("http://") || tab.url.startsWith("https://")) {
+        try {
+          val policy = resolveRenderPolicyForTab(tab.url)
+          webViewPool.preloadTabIfNeeded(
+            context = appContext,
+            tabId = tab.id,
+            targetUrl = tab.url,
+            renderPolicy = policy,
+            onNavigationUpdate = { url, title, isLoading, progress, caps ->
+              onWebViewNavigationUpdate(tab.id, url, title, isLoading, progress, caps)
+            },
+            onRequestBlocked = { onWebViewRequestBlocked(tab.id) },
+            onScrollDelta = ::onViewportScrollDelta,
+            onPermissionChallenge = ::onPermissionChallenge,
+            onExternalAppRequest = ::onExternalAppRequest,
+            onDownloadRequest = ::onDownloadRequest,
+            onIconUpdate = { icon -> onWebViewIconUpdate(tab.id, icon) },
+          )
+        } catch (_: Throwable) {
+        }
+      }
     }
   }
 
@@ -1823,6 +2160,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
   override fun onCleared() {
     super.onCleared()
+    aiStreamJob?.cancel()
     webViewPool.destroyAll()
   }
 }

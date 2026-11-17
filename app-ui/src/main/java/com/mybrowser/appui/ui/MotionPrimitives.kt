@@ -106,10 +106,10 @@ object BrowserSpacing {
  * Zero tween(), keyframes(), or snap() allowed anywhere in the browser.
  */
 object ExpressiveSprings {
-  const val BASE_SPATIAL_DAMPING: Float = 0.76f
-  const val BASE_SPATIAL_STIFFNESS: Float = 260f
-  const val BASE_MICRO_DAMPING: Float = 0.62f
-  const val BASE_MICRO_STIFFNESS: Float = 420f
+  const val BASE_SPATIAL_DAMPING: Float = 0.78f
+  const val BASE_SPATIAL_STIFFNESS: Float = 165f
+  const val BASE_MICRO_DAMPING: Float = 0.65f
+  const val BASE_MICRO_STIFFNESS: Float = 270f
 
   val Spatial: SpringSpec<Float> =
     spring(dampingRatio = BASE_SPATIAL_DAMPING, stiffness = BASE_SPATIAL_STIFFNESS)

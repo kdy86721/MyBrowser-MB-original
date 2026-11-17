@@ -22,6 +22,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -80,11 +81,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -94,6 +98,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
@@ -102,6 +107,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mybrowser.appui.foldable.BrowserPostureMode
 import com.mybrowser.appui.foldable.FoldablePostureState
 import com.mybrowser.appui.foldable.rememberFoldablePostureState
+import com.mybrowser.appui.network.AiFoldableLayout
 import com.mybrowser.appui.viewmodel.BrowserOverlay
 import com.mybrowser.appui.viewmodel.BrowserUiState
 import com.mybrowser.appui.viewmodel.BrowserViewModel
@@ -113,7 +119,9 @@ import com.mybrowser.appui.webview.PendingDownloadRequest
 import com.mybrowser.appui.webview.WebSitePermissionChallenge
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 @Composable
@@ -127,14 +135,15 @@ fun MyBrowserRootScreen(
   val density = LocalDensity.current
   val coroutineScope = rememberCoroutineScope()
   val snackbarHostState = remember { SnackbarHostState() }
-  val rememberedTabCardBounds = remember { mutableStateMapOf<String, Rect>() }
+  val rememberedTabHeroBounds = remember { mutableStateMapOf<String, Rect>() }
 
-  var tabDrawerResetKey by remember { mutableIntStateOf(0) }
   val tabDrawerProgress =
-    remember(tabDrawerResetKey) {
+    remember {
       Animatable(if (uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER) 1f else 0f)
     }
   val isDraggingTabDrawer = remember { mutableStateOf(false) }
+  var isReturningToWeb by remember { mutableStateOf(false) }
+  var pendingDrawerVelocity by remember { mutableFloatStateOf(0f) }
   var heroFlightTabId by remember { mutableStateOf<String?>(uiState.focusedTab?.id) }
 
   // Multi-layer Spatial Dive-In state for Overlays (Settings, Library, Reader, QR)
@@ -143,39 +152,83 @@ fun MyBrowserRootScreen(
   var isOverlayCollapsing by remember { mutableStateOf(false) }
   val overlayDiveAnim = remember { Animatable(0f) }
 
-  // Multi-layer Spatial Dive-In state for Tab Card -> Website
-  var tabToWebDiveKey by remember { mutableIntStateOf(0) }
-  var tabToWebDiveActive by remember { mutableStateOf(false) }
-  var tabToWebOrigin by remember { mutableStateOf(SpatialDiveOrigin()) }
-  val tabToWebDiveAnim = remember(tabToWebDiveKey) { Animatable(0f) }
+  // Multi-layer Spatial Dive-In state for Site Entries (Library, Omnibox Suggestions, Tabletop Bookmarks)
+  var siteDiveKey by remember { mutableIntStateOf(0) }
+  var siteDiveActive by remember { mutableStateOf(false) }
+  var siteDiveFromOverlay by remember { mutableStateOf(false) }
+  var siteDiveOrigin by remember { mutableStateOf(SpatialDiveOrigin()) }
+  var siteDiveSnapshot by remember { mutableStateOf<ImageBitmap?>(null) }
+  val siteDiveAnim = remember(siteDiveKey) { Animatable(0f) }
+
+  // Settings deep-link pillar + Long-press Upward AI Sheet morph state
+  var activeSettingsPillar by remember { mutableStateOf(SettingsPillar.DESIGN) }
+  val aiMorphProgress = remember { Animatable(if (uiState.isAiSheetOpen) 1f else 0f) }
+  val isDraggingAiSheet = remember { mutableStateOf(false) }
+  var pendingAiVelocity by remember { mutableFloatStateOf(0f) }
+  val aiMaxPx = with(density) { 160.dp.toPx().coerceAtLeast(130f) }
 
   LaunchedEffect(uiState.tabs) {
     val activeIds = uiState.tabs.map { it.id }.toSet()
-    val staleIds = rememberedTabCardBounds.keys.filter { it !in activeIds }
-    staleIds.forEach { rememberedTabCardBounds.remove(it) }
+    val staleIds = rememberedTabHeroBounds.keys.filter { it !in activeIds }
+    staleIds.forEach { rememberedTabHeroBounds.remove(it) }
   }
 
   val speedScale = uiState.designConfig.animationSpeedScale
 
-  LaunchedEffect(uiState.activeOverlay) {
-    if (!isDraggingTabDrawer.value && !tabToWebDiveActive) {
-      if (uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER) {
-        if (heroFlightTabId == null) {
-          heroFlightTabId = uiState.focusedTab?.id
-        }
-        tabDrawerProgress.animateTo(1f, BrowserMotion.tabDrawerSpring(speedScale))
-      } else {
-        tabDrawerProgress.animateTo(0f, BrowserMotion.tabDrawerSpring(speedScale))
-        heroFlightTabId = uiState.focusedTab?.id
-      }
+  LaunchedEffect(uiState.isAiSheetOpen, speedScale) {
+    if (!isDraggingAiSheet.value) {
+      val target = if (uiState.isAiSheetOpen) 1f else 0f
+      val initialVel = pendingAiVelocity
+      pendingAiVelocity = 0f
+      aiMorphProgress.animateTo(
+        targetValue = target,
+        animationSpec = ExpressiveSprings.spatial(speedScale),
+        initialVelocity = initialVel,
+      )
     }
   }
 
-  LaunchedEffect(tabToWebDiveKey, tabToWebDiveActive) {
-    if (tabToWebDiveActive) {
-      tabToWebDiveAnim.animateTo(1f, ExpressiveSprings.spatial(speedScale))
-      tabToWebDiveActive = false
-      tabDrawerResetKey += 1
+  LaunchedEffect(siteDiveKey, siteDiveActive) {
+    if (siteDiveActive) {
+      siteDiveAnim.animateTo(1f, ExpressiveSprings.spatial(speedScale))
+      if (siteDiveFromOverlay) {
+        overlayDiveAnim.snapTo(0f)
+        presentedNonTabOverlay = BrowserOverlay.NONE
+        isOverlayCollapsing = false
+      }
+      siteDiveActive = false
+      siteDiveFromOverlay = false
+      siteDiveSnapshot = null
+    }
+  }
+
+  LaunchedEffect(uiState.activeOverlay) {
+    if (!isDraggingTabDrawer.value) {
+      if (uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER) {
+        viewModel.captureVisibleTabThumbnails()
+        isReturningToWeb = false
+        if (heroFlightTabId == null) {
+          heroFlightTabId = uiState.focusedTab?.id
+        }
+        val initialVel = pendingDrawerVelocity
+        pendingDrawerVelocity = 0f
+        tabDrawerProgress.animateTo(
+          targetValue = 1f,
+          animationSpec = ExpressiveSprings.spatial(speedScale),
+          initialVelocity = initialVel,
+        )
+      } else {
+        isReturningToWeb = true
+        if (heroFlightTabId == null) {
+          heroFlightTabId = uiState.focusedTab?.id
+        }
+        tabDrawerProgress.animateTo(
+          targetValue = 0f,
+          animationSpec = ExpressiveSprings.spatial(speedScale),
+        )
+        isReturningToWeb = false
+        heroFlightTabId = uiState.focusedTab?.id
+      }
     }
   }
 
@@ -188,7 +241,7 @@ fun MyBrowserRootScreen(
       isOverlayCollapsing = false
       presentedNonTabOverlay = nonTabOverlayTarget
       overlayDiveAnim.animateTo(1f, ExpressiveSprings.spatial(speedScale))
-    } else if (presentedNonTabOverlay != BrowserOverlay.NONE && !isOverlayCollapsing) {
+    } else if (presentedNonTabOverlay != BrowserOverlay.NONE && !isOverlayCollapsing && !siteDiveFromOverlay) {
       isOverlayCollapsing = true
       overlayDiveAnim.animateTo(0f, ExpressiveSprings.spatial(speedScale))
       presentedNonTabOverlay = BrowserOverlay.NONE
@@ -196,12 +249,20 @@ fun MyBrowserRootScreen(
     }
   }
 
-  val requestOpenOverlay: (BrowserOverlay, SpatialDiveOrigin, Int) -> Unit =
-    { overlay, origin, libraryTab ->
+  val openOverlayWithPillar: (BrowserOverlay, SpatialDiveOrigin, Int, SettingsPillar) -> Unit =
+    { overlay, origin, libraryTab, settingsPillar ->
+      if (overlay == BrowserOverlay.SETTINGS_HUB) {
+        activeSettingsPillar = settingsPillar
+      }
       isOverlayCollapsing = false
       activeOverlayOrigin = origin
       presentedNonTabOverlay = overlay
       viewModel.showOverlay(overlay, libraryInitialTab = libraryTab)
+    }
+
+  val requestOpenOverlay: (BrowserOverlay, SpatialDiveOrigin, Int) -> Unit =
+    { overlay, origin, libraryTab ->
+      openOverlayWithPillar(overlay, origin, libraryTab, SettingsPillar.DESIGN)
     }
 
   val requestDismissOverlay: () -> Unit = {
@@ -217,6 +278,25 @@ fun MyBrowserRootScreen(
       viewModel.dismissOverlay()
     }
   }
+
+  val launchSiteDive: (url: String, pane: Int, origin: SpatialDiveOrigin, fromOverlay: Boolean) -> Unit =
+    { url, pane, origin, fromOverlay ->
+      if (origin.isValid()) {
+        siteDiveFromOverlay = fromOverlay
+        siteDiveOrigin = origin
+        siteDiveSnapshot =
+          if (!fromOverlay) captureComposeViewBitmap(rootView)?.asImageBitmap()
+          else null
+        siteDiveKey += 1
+        siteDiveActive = true
+        viewModel.navigateUrlInPane(url, pane)
+      } else {
+        viewModel.navigateUrlInPane(url, pane)
+        if (fromOverlay) {
+          requestDismissOverlay()
+        }
+      }
+    }
 
   LaunchedEffect(uiState.snackbarNotification?.id) {
     val notif = uiState.snackbarNotification ?: return@LaunchedEffect
@@ -242,14 +322,21 @@ fun MyBrowserRootScreen(
 
   BackHandler(
     enabled =
-      uiState.activeOverlay != BrowserOverlay.NONE ||
+      uiState.isAiSheetOpen ||
+        uiState.activeOverlay != BrowserOverlay.NONE ||
         presentedNonTabOverlay != BrowserOverlay.NONE ||
         uiState.isOmniboxFocused ||
         uiState.isFindInPageVisible ||
         !isInternalPage
   ) {
     when {
+      uiState.isAiSheetOpen -> viewModel.closeAiSheet()
       presentedNonTabOverlay != BrowserOverlay.NONE -> requestDismissOverlay()
+      uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER -> {
+        heroFlightTabId = uiState.focusedTab?.id
+        isReturningToWeb = true
+        viewModel.dismissOverlay()
+      }
       uiState.activeOverlay != BrowserOverlay.NONE -> viewModel.dismissOverlay()
       uiState.isOmniboxFocused -> viewModel.blurOmnibox()
       uiState.isFindInPageVisible -> viewModel.closeFindInPage()
@@ -310,6 +397,9 @@ fun MyBrowserRootScreen(
           }
           ToolbarActionId.HOME -> viewModel.goHomeInPane(paneIndex)
           ToolbarActionId.TABS -> {
+            viewModel.captureVisibleTabThumbnails()
+            isReturningToWeb = false
+            heroFlightTabId = paneTab?.id ?: uiState.focusedTab?.id
             viewModel.setActivePane(paneIndex)
             viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
           }
@@ -364,14 +454,170 @@ fun MyBrowserRootScreen(
       val drawerP = tabDrawerProgress.value.coerceIn(0f, 1f)
       val heroMaxPx = with(density) { 180.dp.toPx().coerceAtLeast(140f) }
       val overlayDiveP = overlayDiveAnim.value.coerceIn(0f, 1f)
-      val tabToWebDiveP = if (tabToWebDiveActive) tabToWebDiveAnim.value.coerceIn(0f, 1f) else 0f
+      val siteDiveP = if (siteDiveActive) siteDiveAnim.value.coerceIn(0f, 1f) else 0f
+      val aiP = aiMorphProgress.value.coerceIn(0f, 1f)
+      val showAiSheetLayer = aiP > 0.004f || uiState.isAiSheetOpen
 
-      // Keep underlying Tab Switcher mounted behind expanding website during Tab Card -> Website dive
-      val showTabSwitcherLayer =
-        tabToWebDiveActive || drawerP > 0.004f || uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER
+      val showTabSwitcherLayer = drawerP > 0.004f || uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER
+      val isTabSwitcherSettled =
+        uiState.activeOverlay == BrowserOverlay.TAB_SWITCHER && drawerP >= 0.996f && !isReturningToWeb
+
+      val handleAiSwipeProgress: (Int, Float) -> Unit = { paneIndex, p ->
+        if (!isDraggingAiSheet.value) {
+          viewModel.prepareAiSheetForPane(paneIndex)
+        }
+        isDraggingAiSheet.value = true
+        coroutineScope.launch { aiMorphProgress.snapTo(p) }
+      }
+
+      val handleAiSwipeEnd: (Int, Boolean, Float) -> Unit = { paneIndex, completed, velocityY ->
+        isDraggingAiSheet.value = false
+        val normVel = (-velocityY / aiMaxPx).coerceIn(-8f, 8f)
+        if (completed) {
+          pendingAiVelocity = normVel
+          viewModel.openAiSheet(paneIndex, fromDragGesture = true)
+        } else {
+          coroutineScope.launch {
+            aiMorphProgress.animateTo(
+              targetValue = 0f,
+              animationSpec = ExpressiveSprings.spatial(speedScale),
+              initialVelocity = normVel,
+            )
+          }
+        }
+      }
 
       val renderPrimaryBrowserSurface: @Composable (Modifier) -> Unit = { surfaceModifier ->
         val overlayDepartModifier =
+          if (presentedNonTabOverlay != BrowserOverlay.NONE && overlayDiveP > 0.002f && !(siteDiveActive && siteDiveFromOverlay)) {
+            Modifier.spatialDiveBackground(
+              progress = overlayDiveP,
+              origin = activeOverlayOrigin,
+              hostSize = rootSize,
+              hostTopLeftInRoot = rootOrigin,
+            )
+          } else {
+            Modifier
+          }
+
+        val isAiRightPanelLayout =
+          postureState.supportsDualPane && uiState.aiConfig.foldableLayout == AiFoldableLayout.RIGHT_PANEL
+        val aiBackdropModifier =
+          if (aiP > 0.002f && presentedNonTabOverlay == BrowserOverlay.NONE) {
+            val depthScale = if (isAiRightPanelLayout) 1f - 0.015f * aiP else 1f - 0.045f * aiP
+            val blurRadiusDp = if (isAiRightPanelLayout) 6f * aiP else 20f * aiP
+            Modifier
+              .graphicsLayer {
+                scaleX = depthScale
+                scaleY = depthScale
+                val cornerPx = uiState.designConfig.barCornerRadiusDp.dp.toPx() * aiP
+                if (cornerPx > 0.5f) {
+                  shape = RoundedCornerShape(cornerPx / depthScale)
+                  clip = true
+                }
+              }
+              .then(
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && blurRadiusDp > 0.5f) {
+                  Modifier.blur(blurRadiusDp.dp, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+                } else {
+                  Modifier
+                }
+              )
+          } else {
+            Modifier
+          }
+
+        when (postureState.mode) {
+          BrowserPostureMode.TABLETOP_HALF_OPENED -> {
+            TabletopPostureLayout(
+              uiState = uiState,
+              postureState = postureState,
+              viewModel = viewModel,
+              onAiSwipeProgress = { p -> handleAiSwipeProgress(uiState.activePane, p) },
+              onAiSwipeEnd = { completed, velY ->
+                handleAiSwipeEnd(uiState.activePane, completed, velY)
+              },
+              onRequestOpenOverlay = requestOpenOverlay,
+              onNavigateWithSiteDive = { url, pane, origin ->
+                launchSiteDive(url, pane, origin, false)
+              },
+              onExecuteActionForPane = executeToolbarActionForPane,
+              modifier = surfaceModifier.then(overlayDepartModifier).then(aiBackdropModifier),
+            )
+          }
+          BrowserPostureMode.BOOK_HALF_OPENED,
+          BrowserPostureMode.PASSPORT_FLAT,
+          BrowserPostureMode.COVER_COMPACT -> {
+            FloatingBarWebLayout(
+              uiState = uiState,
+              postureState = postureState,
+              forceDualPane = false,
+              viewModel = viewModel,
+              tabDrawerProgress = drawerP,
+              isReturningToWeb = isReturningToWeb,
+              heroFlightTabId = heroFlightTabId,
+              rememberedTabCardBounds = rememberedTabHeroBounds,
+              onSwipeUpDragProgress = { p ->
+                if (!isDraggingTabDrawer.value) {
+                  viewModel.captureVisibleTabThumbnails()
+                }
+                isDraggingTabDrawer.value = true
+                isReturningToWeb = false
+                heroFlightTabId = uiState.focusedTab?.id
+                coroutineScope.launch { tabDrawerProgress.snapTo(p) }
+              },
+              onSwipeUpDragEnd = { paneIndex, completed, velocityY ->
+                isDraggingTabDrawer.value = false
+                val normVel = (-velocityY / heroMaxPx).coerceIn(-8f, 8f)
+                if (completed) {
+                  isReturningToWeb = false
+                  pendingDrawerVelocity = normVel
+                  viewModel.setActivePane(paneIndex)
+                  viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
+                } else {
+                  isReturningToWeb = true
+                  coroutineScope.launch {
+                    tabDrawerProgress.animateTo(
+                      targetValue = 0f,
+                      animationSpec = ExpressiveSprings.spatial(speedScale),
+                      initialVelocity = normVel,
+                    )
+                    isReturningToWeb = false
+                  }
+                }
+              },
+              onAiSwipeProgress = handleAiSwipeProgress,
+              onAiSwipeEnd = handleAiSwipeEnd,
+              onRequestOpenOverlay = requestOpenOverlay,
+              onNavigateWithSiteDive = { url, pane, origin ->
+                launchSiteDive(url, pane, origin, false)
+              },
+              onExecuteActionForPane = executeToolbarActionForPane,
+              modifier =
+                surfaceModifier
+                  .then(overlayDepartModifier)
+                  .then(aiBackdropModifier)
+                  .zIndex(if (drawerP > 0.004f && !isTabSwitcherSettled) 2f else 0f),
+            )
+          }
+        }
+      }
+
+      if (presentedNonTabOverlay != BrowserOverlay.NONE && overlayDiveP > 0.002f) {
+        Box(
+          modifier =
+            Modifier.fillMaxSize()
+              .background(Color.Black.copy(alpha = 0.88f * overlayDiveP))
+        )
+      }
+
+      if (!siteDiveActive) {
+        renderPrimaryBrowserSurface(Modifier)
+      }
+
+      // 제스처 & 클릭 양방향 통합 Hero Tab-Fly 서랍 (0f = 전체 화면 웹뷰, 1f = 탭 카드 위치)
+      if (showTabSwitcherLayer) {
+        val tabLayerDepartModifier =
           if (presentedNonTabOverlay != BrowserOverlay.NONE && overlayDiveP > 0.002f) {
             Modifier.spatialDiveBackground(
               progress = overlayDiveP,
@@ -383,113 +629,11 @@ fun MyBrowserRootScreen(
             Modifier
           }
 
-        when (postureState.mode) {
-          BrowserPostureMode.TABLETOP_HALF_OPENED -> {
-            TabletopPostureLayout(
-              uiState = uiState,
-              postureState = postureState,
-              viewModel = viewModel,
-              onRequestOpenOverlay = requestOpenOverlay,
-              onExecuteActionForPane = executeToolbarActionForPane,
-              modifier = surfaceModifier.then(overlayDepartModifier),
-            )
-          }
-          BrowserPostureMode.BOOK_HALF_OPENED,
-          BrowserPostureMode.PASSPORT_FLAT,
-          BrowserPostureMode.COVER_COMPACT -> {
-            FloatingBarWebLayout(
-              uiState = uiState,
-              postureState = postureState,
-              forceDualPane = false,
-              viewModel = viewModel,
-              tabDrawerProgress = if (tabToWebDiveActive) 0f else drawerP,
-              heroFlightTabId = heroFlightTabId,
-              rememberedTabCardBounds = rememberedTabCardBounds,
-              onSwipeUpDragProgress = { p ->
-                if (!isDraggingTabDrawer.value) {
-                  viewModel.captureVisibleTabThumbnails()
-                }
-                isDraggingTabDrawer.value = true
-                heroFlightTabId = uiState.focusedTab?.id
-                coroutineScope.launch { tabDrawerProgress.snapTo(p) }
-              },
-              onSwipeUpDragEnd = { paneIndex, completed, velocityY ->
-                isDraggingTabDrawer.value = false
-                val normVel = (-velocityY / heroMaxPx).coerceIn(-8f, 8f)
-                if (completed) {
-                  viewModel.setActivePane(paneIndex)
-                  viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
-                  coroutineScope.launch {
-                    tabDrawerProgress.animateTo(
-                      targetValue = 1f,
-                      animationSpec = BrowserMotion.tabDrawerSpring(speedScale),
-                      initialVelocity = normVel,
-                    )
-                  }
-                } else {
-                  coroutineScope.launch {
-                    tabDrawerProgress.animateTo(
-                      targetValue = 0f,
-                      animationSpec = BrowserMotion.tabDrawerSpring(speedScale),
-                      initialVelocity = normVel,
-                    )
-                  }
-                }
-              },
-              onRequestOpenOverlay = requestOpenOverlay,
-              onExecuteActionForPane = executeToolbarActionForPane,
-              modifier =
-                surfaceModifier
-                  .then(overlayDepartModifier)
-                  .zIndex(if (!tabToWebDiveActive && drawerP in 0.004f..0.92f) 2f else 0f),
-            )
-          }
-        }
-      }
-
-      val activeDiveBackdropAlpha =
-        maxOf(
-          if (presentedNonTabOverlay != BrowserOverlay.NONE) overlayDiveP else 0f,
-          tabToWebDiveP,
-        ).coerceIn(0f, 1f)
-      if (activeDiveBackdropAlpha > 0.002f) {
-        Box(
-          modifier =
-            Modifier.fillMaxSize()
-              .background(Color.Black.copy(alpha = 0.88f * activeDiveBackdropAlpha))
-        )
-      }
-
-      if (!tabToWebDiveActive) {
-        renderPrimaryBrowserSurface(Modifier)
-      }
-
-      // 제스처 기반 연속 Hero Tab-Fly 서랍 (0f = 웹페이지, 1f = 탭 그리드)
-      if (showTabSwitcherLayer) {
-        val tabLayerDepartModifier =
-          when {
-            tabToWebDiveActive ->
-              Modifier.spatialDiveBackground(
-                progress = tabToWebDiveP,
-                origin = tabToWebOrigin,
-                hostSize = rootSize,
-                hostTopLeftInRoot = rootOrigin,
-              )
-            presentedNonTabOverlay != BrowserOverlay.NONE && overlayDiveP > 0.002f ->
-              Modifier.spatialDiveBackground(
-                progress = overlayDiveP,
-                origin = activeOverlayOrigin,
-                hostSize = rootSize,
-                hostTopLeftInRoot = rootOrigin,
-              )
-            else -> Modifier
-          }
-
         Box(
           modifier =
             Modifier.fillMaxSize()
               .then(tabLayerDepartModifier)
-              .zIndex(if (tabToWebDiveActive) 1f else if (drawerP >= 0.92f) 3f else 1f)
+              .zIndex(if (isTabSwitcherSettled) 3f else 1f)
         ) {
           TabSwitcherOverlay(
             tabs = uiState.tabs,
@@ -498,7 +642,8 @@ fun MyBrowserRootScreen(
             tabViewMode = uiState.settings.tabViewMode,
             tabThumbnails = viewModel.tabThumbnails,
             tabFavicons = viewModel.tabFavicons,
-            drawerProgress = if (tabToWebDiveActive) 1f else drawerP,
+            drawerProgress = drawerP,
+            isReturningToWeb = isReturningToWeb,
             heroArrivalTabId = heroFlightTabId ?: uiState.focusedTab?.id,
             hasUndoableClosedTab = uiState.hasUndoableClosedTab,
             tabSwipeToCloseEnabled = uiState.settings.tabSwipeToCloseEnabled,
@@ -508,13 +653,12 @@ fun MyBrowserRootScreen(
             splitMode = uiState.splitMode,
             postureState = postureState,
             onSelectTab = { tabId, pane, origin ->
-              heroFlightTabId = tabId
-              viewModel.selectTab(tabId, pane)
               if (origin.isValid()) {
-                tabToWebOrigin = origin
-                tabToWebDiveKey += 1
-                tabToWebDiveActive = true
+                rememberedTabHeroBounds[tabId] = origin.boundsInRoot
               }
+              heroFlightTabId = tabId
+              isReturningToWeb = true
+              viewModel.selectTab(tabId, pane)
             },
             onCloseTab = viewModel::closeTab,
             onUndoCloseTab = viewModel::undoLastClosedTab,
@@ -529,38 +673,33 @@ fun MyBrowserRootScreen(
             onCollapseAllFolders = viewModel::collapseAllFolders,
             onRenameFolder = viewModel::renameFolder,
             onSetFolderColor = viewModel::setFolderColor,
-            onReportTabCardBounds = { updated ->
-              val removed = rememberedTabCardBounds.keys.filter { it !in updated }
-              removed.forEach { rememberedTabCardBounds.remove(it) }
-              rememberedTabCardBounds.putAll(updated)
+            onReportHeroThumbnailBounds = { updated ->
+              val removed = rememberedTabHeroBounds.keys.filter { it !in updated }
+              removed.forEach { rememberedTabHeroBounds.remove(it) }
+              rememberedTabHeroBounds.putAll(updated)
             },
             onDismiss = {
               heroFlightTabId = uiState.focusedTab?.id
+              isReturningToWeb = true
               viewModel.dismissOverlay()
             },
           )
         }
       }
 
-      // Tab Grid Card -> Website Spatial Dive-In Foreground Layer
-      if (tabToWebDiveActive) {
-        SpatialDiveScrim(
-          progress = tabToWebDiveP,
-          modifier = Modifier.zIndex(2.5f),
-        )
-        SpatialDiveForegroundHost(
-          progress = tabToWebDiveP,
-          origin = tabToWebOrigin,
-          hostSize = rootSize,
-          hostTopLeftInRoot = rootOrigin,
-          modifier = Modifier.zIndex(3.5f),
-        ) {
-          renderPrimaryBrowserSurface(Modifier.fillMaxSize())
-        }
-      }
-
       // Settings / Library / Reader / QR Spatial Dive-In Layer
       if (presentedNonTabOverlay != BrowserOverlay.NONE && overlayDiveP > 0.002f) {
+        val overlayDepartModifier =
+          if (siteDiveActive && siteDiveFromOverlay && siteDiveP > 0.002f) {
+            Modifier.spatialDiveBackground(
+              progress = siteDiveP,
+              origin = siteDiveOrigin,
+              hostSize = rootSize,
+              hostTopLeftInRoot = rootOrigin,
+            )
+          } else {
+            Modifier
+          }
         SpatialDiveScrim(
           progress = overlayDiveP,
           modifier = Modifier.zIndex(4f),
@@ -570,7 +709,7 @@ fun MyBrowserRootScreen(
           origin = activeOverlayOrigin,
           hostSize = rootSize,
           hostTopLeftInRoot = rootOrigin,
-          modifier = Modifier.zIndex(5f),
+          modifier = Modifier.zIndex(5f).then(overlayDepartModifier),
         ) {
           when (presentedNonTabOverlay) {
             BrowserOverlay.NONE,
@@ -582,9 +721,8 @@ fun MyBrowserRootScreen(
                 focusedUrl = uiState.focusedTab?.url,
                 initialTab = uiState.libraryInitialTab,
                 onToggleCurrentBookmark = viewModel::toggleBookmarkForFocusedTab,
-                onOpenUrl = { url ->
-                  viewModel.navigateUrlInFocusedPane(url)
-                  requestDismissOverlay()
+                onOpenUrl = { url, origin ->
+                  launchSiteDive(url, uiState.activePane, origin, true)
                 },
                 onDeleteBookmark = viewModel::deleteBookmark,
                 onDeleteHistoryItem = viewModel::deleteHistoryItem,
@@ -606,6 +744,11 @@ fun MyBrowserRootScreen(
                 dohProviders = uiState.dohProviders,
                 isProbingDoh = uiState.isProbingDoh,
                 lastDohLookup = uiState.lastDohLookup,
+                aiConfig = uiState.aiConfig,
+                aiProviderPresets = uiState.aiProviderPresets,
+                isTestingAiConnection = uiState.isTestingAiConnection,
+                aiConnectionTestResult = uiState.aiConnectionTestResult,
+                initialPillar = activeSettingsPillar,
                 statusBannerMessage = uiState.statusBannerMessage,
                 onUpdateSetting = viewModel::updateSetting,
                 onUpdateDesignParam = viewModel::updateDesignParam,
@@ -622,6 +765,9 @@ fun MyBrowserRootScreen(
                 onSetDomainSiteOverride = viewModel::setDomainSiteOverride,
                 onResetDomainOverrides = viewModel::resetDomainSiteOverrides,
                 onRunDohProbe = viewModel::runDohProbe,
+                onUpdateAiConfig = viewModel::updateAiConfig,
+                onResetAiConfigDefaults = viewModel::resetAiConfigDefaults,
+                onTestAiConnection = viewModel::testAiConnection,
                 onOpenLibrary = { libOrigin ->
                   requestOpenOverlay(BrowserOverlay.LIBRARY_PANEL, libOrigin, 0)
                 },
@@ -643,6 +789,97 @@ fun MyBrowserRootScreen(
               )
             }
           }
+        }
+      }
+
+      // Morphing AI CLI Chat Sheet / 1:1.4 Right Panel (Long-Press + Upward Drag)
+      if (showAiSheetLayer && presentedNonTabOverlay == BrowserOverlay.NONE) {
+        val isAiRightPanelLayout =
+          postureState.supportsDualPane && uiState.aiConfig.foldableLayout == AiFoldableLayout.RIGHT_PANEL
+        val scrimAlpha = (if (isAiRightPanelLayout) 0.28f else 0.50f) * aiP
+        val dismissScrimInteraction = remember { MutableInteractionSource() }
+        Box(
+          modifier =
+            Modifier
+              .fillMaxSize()
+              .background(Color.Black.copy(alpha = scrimAlpha))
+              .clickable(
+                interactionSource = dismissScrimInteraction,
+                indication = null,
+                enabled = uiState.isAiSheetOpen,
+                onClick = viewModel::closeAiSheet,
+              )
+              .zIndex(6f),
+        )
+        AiChatOverlaySheet(
+          morphProgress = aiP,
+          postureState = postureState,
+          designConfig = uiState.designConfig,
+          aiConfig = uiState.aiConfig,
+          providerPresets = uiState.aiProviderPresets,
+          attachedUrl = uiState.aiAttachedUrl,
+          attachedTitle = uiState.aiAttachedTitle,
+          draftInput = uiState.aiDraftInput,
+          messages = uiState.aiMessages,
+          isStreaming = uiState.isAiStreaming,
+          onDraftChange = viewModel::updateAiDraft,
+          onDetachPageContext = viewModel::detachAiPageContext,
+          onSendMessage = viewModel::sendAiMessage,
+          onStopStreaming = viewModel::stopAiStreaming,
+          onClearConversation = viewModel::clearAiConversation,
+          onOpenAiSettings = { settingsOrigin ->
+            viewModel.closeAiSheet()
+            openOverlayWithPillar(BrowserOverlay.SETTINGS_HUB, settingsOrigin, 0, SettingsPillar.AI)
+          },
+          onDismiss = viewModel::closeAiSheet,
+          modifier = Modifier.zIndex(7f),
+        )
+      }
+
+      // Site Entry Spatial Dive-In Foreground Layer (Library Items, Omnibox Suggestions, Tabletop Bookmarks)
+      if (siteDiveActive) {
+        if (!siteDiveFromOverlay) {
+          Box(
+            modifier =
+              Modifier.fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.88f * siteDiveP))
+                .zIndex(4f)
+          )
+          val snap = siteDiveSnapshot
+          Box(
+            modifier =
+              Modifier.fillMaxSize()
+                .spatialDiveBackground(
+                  progress = siteDiveP,
+                  origin = siteDiveOrigin,
+                  hostSize = rootSize,
+                  hostTopLeftInRoot = rootOrigin,
+                )
+                .background(MaterialTheme.colorScheme.background)
+                .zIndex(5f)
+          ) {
+            if (snap != null) {
+              Image(
+                bitmap = snap,
+                contentDescription = null,
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
+          }
+        }
+        SpatialDiveScrim(
+          progress = siteDiveP,
+          modifier = Modifier.zIndex(6f),
+        )
+        SpatialDiveForegroundHost(
+          progress = siteDiveP,
+          origin = siteDiveOrigin,
+          hostSize = rootSize,
+          hostTopLeftInRoot = rootOrigin,
+          modifier = Modifier.zIndex(7f),
+        ) {
+          renderPrimaryBrowserSurface(Modifier)
         }
       }
 
@@ -877,7 +1114,9 @@ private fun isDesktopModeForTab(tab: TabUiModel?, uiState: BrowserUiState): Bool
 private class TabCarouselState(
   val paneIndex: Int,
 ) {
-  var resetKey by mutableIntStateOf(0)
+  var animToken by mutableIntStateOf(0)
+  var activeAnimJob: Job? = null
+  var baseOffsetPx by mutableFloatStateOf(0f)
   var isDragging by mutableStateOf(false)
   var isAnimating by mutableStateOf(false)
   var dragOffsetPx by mutableFloatStateOf(0f)
@@ -891,11 +1130,15 @@ private fun FloatingBarWebLayout(
   forceDualPane: Boolean,
   viewModel: BrowserViewModel,
   tabDrawerProgress: Float,
+  isReturningToWeb: Boolean,
   heroFlightTabId: String?,
   rememberedTabCardBounds: Map<String, Rect>,
   onSwipeUpDragProgress: (Float) -> Unit,
   onSwipeUpDragEnd: (paneIndex: Int, completed: Boolean, velocityY: Float) -> Unit,
+  onAiSwipeProgress: (paneIndex: Int, progress: Float) -> Unit,
+  onAiSwipeEnd: (paneIndex: Int, completed: Boolean, velocityY: Float) -> Unit,
   onRequestOpenOverlay: (BrowserOverlay, SpatialDiveOrigin, Int) -> Unit,
+  onNavigateWithSiteDive: (String, Int, SpatialDiveOrigin) -> Unit,
   onExecuteActionForPane: (Int, ToolbarActionId) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -947,33 +1190,41 @@ private fun FloatingBarWebLayout(
 
   val primaryCarousel = remember { TabCarouselState(0) }
   val secondaryCarousel = remember { TabCarouselState(1) }
-  val primaryCarouselAnim = remember(primaryCarousel.resetKey) { Animatable(0f) }
-  val secondaryCarouselAnim = remember(secondaryCarousel.resetKey) { Animatable(0f) }
+  val primaryCarouselAnim = remember { Animatable(0f) }
+  val secondaryCarouselAnim = remember { Animatable(0f) }
 
-  fun handleCarouselDrag(carousel: TabCarouselState, dx: Float) {
+  fun handleCarouselDrag(carousel: TabCarouselState, anim: Animatable<Float, *>, dx: Float) {
     if (uiState.tabs.size < 2) return
     if (!carousel.isDragging) {
+      carousel.animToken += 1
+      carousel.activeAnimJob?.cancel()
+      carousel.activeAnimJob = null
+      carousel.baseOffsetPx = if (carousel.isAnimating) anim.value else 0f
       viewModel.captureVisibleTabThumbnails()
       carousel.isDragging = true
       carousel.isAnimating = false
     }
     val maxTravel = carousel.paneWidthPx.coerceAtLeast(200f) + gapPx
-    carousel.dragOffsetPx = dx.coerceIn(-maxTravel, maxTravel)
+    carousel.dragOffsetPx = (carousel.baseOffsetPx + dx).coerceIn(-maxTravel, maxTravel)
   }
 
   fun handleCarouselDragEnd(
     carousel: TabCarouselState,
     anim: Animatable<Float, *>,
-    dx: Float,
     velX: Float,
   ) {
     val w = carousel.paneWidthPx.coerceAtLeast(200f)
     val maxTravel = w + gapPx
-    val clampedDx = dx.coerceIn(-maxTravel, maxTravel)
+    val clampedDx = carousel.dragOffsetPx.coerceIn(-maxTravel, maxTravel)
     if (uiState.tabs.size < 2 || (abs(clampedDx) < 2f && abs(velX) < 160f)) {
+      carousel.animToken += 1
+      carousel.activeAnimJob?.cancel()
+      carousel.activeAnimJob = null
       carousel.isDragging = false
       carousel.isAnimating = false
       carousel.dragOffsetPx = 0f
+      carousel.baseOffsetPx = 0f
+      carouselScope.launch { anim.snapTo(0f) }
       return
     }
     val dirRight = if (abs(clampedDx) > 8f) clampedDx > 0f else velX > 0f
@@ -981,32 +1232,35 @@ private fun FloatingBarWebLayout(
     val pastThreshold = abs(clampedDx) >= w * 0.30f
     val fastCommit = (dirRight && velX > 750f) || (!dirRight && velX < -750f)
     val shouldCommit = pastThreshold || fastCommit
-    val targetPx =
-      if (shouldCommit) {
-        if (dirRight) (w + gapPx) else -(w + gapPx)
-      } else {
-        0f
-      }
-    carouselScope.launch {
-      anim.snapTo(clampedDx)
-      carousel.isDragging = false
-      carousel.isAnimating = true
-      try {
-        anim.animateTo(
-          targetValue = targetPx,
-          animationSpec = ExpressiveSprings.spatial(speedScale),
-          initialVelocity = velX.coerceIn(-6000f, 6000f),
-        )
+    val targetPx = if (dirRight) (w + gapPx) else -(w + gapPx)
+    val startOffsetPx = if (shouldCommit) (clampedDx - targetPx) else clampedDx
+
+    val myToken = carousel.animToken + 1
+    carousel.animToken = myToken
+    carousel.activeAnimJob?.cancel()
+    carousel.activeAnimJob =
+      carouselScope.launch {
+        anim.snapTo(startOffsetPx)
+        carousel.isDragging = false
+        carousel.isAnimating = true
         if (shouldCommit) {
           haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
           viewModel.stepAdjacentTab(delta, targetPane = carousel.paneIndex)
         }
-      } finally {
-        carousel.isAnimating = false
-        carousel.dragOffsetPx = 0f
-        carousel.resetKey += 1
+        try {
+          anim.animateTo(
+            targetValue = 0f,
+            animationSpec = ExpressiveSprings.spatial(speedScale),
+            initialVelocity = velX.coerceIn(-6000f, 6000f),
+          )
+        } finally {
+          if (carousel.animToken == myToken) {
+            carousel.isAnimating = false
+            carousel.dragOffsetPx = 0f
+            carousel.baseOffsetPx = 0f
+          }
+        }
       }
-    }
   }
 
   val primaryCarouselOffsetPx =
@@ -1025,52 +1279,95 @@ private fun FloatingBarWebLayout(
   val statusInsetModifier =
     if (uiState.settings.hideStatusBar) Modifier else Modifier.statusBarsPadding()
 
-  BoxWithConstraints(modifier = modifier.fillMaxSize().then(statusInsetModifier)) {
-    val totalWidthPx = constraints.maxWidth.toFloat().coerceAtLeast(1f)
-    val totalHeightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+  var hostOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+
+  BoxWithConstraints(
+    modifier =
+      modifier
+        .fillMaxSize()
+        .then(statusInsetModifier)
+        .onGloballyPositioned { coords ->
+          hostOriginInRoot = coords.boundsInRoot().topLeft
+        }
+  ) {
+    val totalWidthInt = constraints.maxWidth.coerceAtLeast(1)
+    val totalHeightInt = constraints.maxHeight.coerceAtLeast(1)
+    val totalWidthPx = totalWidthInt.toFloat()
+    val totalHeightPx = totalHeightInt.toFloat()
+
     val activeHeroRect = (heroFlightTabId ?: uiState.focusedTab?.id)?.let { rememberedTabCardBounds[it] }
-    val targetScale =
-      if (activeHeroRect != null && activeHeroRect.width > 10f) {
-        (activeHeroRect.width / totalWidthPx).coerceIn(0.36f, 0.56f)
-      } else {
-        0.46f
-      }
-    val targetDx =
-      if (activeHeroRect != null) {
-        (activeHeroRect.center.x - (totalWidthPx * 0.5f))
-          .coerceIn(-totalWidthPx * 0.65f, totalWidthPx * 0.65f)
-      } else {
-        0f
-      }
-    val targetDy =
-      if (activeHeroRect != null) {
-        (activeHeroRect.center.y - (totalHeightPx * 0.5f))
-          .coerceIn(-totalHeightPx * 0.65f, totalHeightPx * 0.65f)
-      } else {
-        -totalHeightPx * 0.14f
-      }
+    val endWidth =
+      if (activeHeroRect != null && activeHeroRect.width > 4f) activeHeroRect.width.coerceAtLeast(16f)
+      else (totalWidthPx * 0.44f).coerceAtLeast(120f)
+    val endHeight =
+      if (activeHeroRect != null && activeHeroRect.height > 4f) activeHeroRect.height.coerceAtLeast(16f)
+      else (endWidth / 1.12f).coerceAtMost(totalHeightPx * 0.45f)
+    val endLeft =
+      if (activeHeroRect != null && activeHeroRect.width > 4f) (activeHeroRect.left - hostOriginInRoot.x)
+      else (totalWidthPx - endWidth) * 0.5f
+    val endTop =
+      if (activeHeroRect != null && activeHeroRect.height > 4f) (activeHeroRect.top - hostOriginInRoot.y)
+      else (totalHeightPx - endHeight) * 0.38f
 
     val p = tabDrawerProgress.coerceIn(0f, 1f)
+    val isHeroActive = p > 0.004f
     val arcPhase = sin(p * PI).toFloat()
-    val arcLiftPx = arcPhase * with(density) { 28.dp.toPx() }
-    val arcSidePx = arcPhase * (if (targetDx >= 0f) -1f else 1f) * with(density) { 16.dp.toPx() }
-    val settleFade = ((p - 0.82f) / 0.12f).coerceIn(0f, 1f)
+    val arcLiftPx = arcPhase * with(density) { 12.dp.toPx() }
+    val curLeft = endLeft * p
+    val curTop = endTop * p - arcLiftPx
+    val curWidth = (totalWidthPx + (endWidth - totalWidthPx) * p).coerceAtLeast(1f)
+    val curHeight = (totalHeightPx + (endHeight - totalHeightPx) * p).coerceAtLeast(1f)
+
+    val uniformScale =
+      if (isHeroActive) {
+        maxOf(curWidth / totalWidthPx, curHeight / totalHeightPx).coerceIn(0.12f, 1f)
+      } else {
+        1f
+      }
+    val clipWInt =
+      if (isHeroActive) (curWidth / uniformScale).roundToInt().coerceIn(1, totalWidthInt)
+      else totalWidthInt
+    val clipHInt =
+      if (isHeroActive) (curHeight / uniformScale).roundToInt().coerceIn(1, totalHeightInt)
+      else totalHeightInt
+
+    val visualCornerDp =
+      computeHeroWindowCornerDp(
+        progress = p,
+        barCornerRadiusDp = uiState.designConfig.barCornerRadiusDp,
+        cardCornerRadiusDp = uiState.designConfig.cardCornerRadiusDp,
+      )
+    val preScaleShape =
+      if (isHeroActive && visualCornerDp > 0.05f) {
+        RoundedCornerShape((visualCornerDp / uniformScale).coerceIn(0f, 180f).dp)
+      } else {
+        RectangleShape
+      }
+    val heroAlpha = computeHeroWindowAlpha(progress = p, isReturningToWeb = isReturningToWeb)
+    val heroShadowPx =
+      if (isHeroActive) with(density) { (22f * arcPhase + 10f * p).dp.toPx() } else 0f
 
     val viewportHeroModifier =
-      Modifier.fillMaxSize()
+      Modifier
         .graphicsLayer {
-          val s = 1f - p * (1f - targetScale)
-          scaleX = s
-          scaleY = s
-          translationX = targetDx * p + arcSidePx
-          translationY = targetDy * p - arcLiftPx
-          alpha = 1f - settleFade
+          translationX = if (isHeroActive) curLeft else 0f
+          translationY = if (isHeroActive) curTop else 0f
+          scaleX = uniformScale
+          scaleY = uniformScale
+          transformOrigin = TransformOrigin(0f, 0f)
+          shape = preScaleShape
+          clip = isHeroActive && visualCornerDp > 0.05f
+          alpha = heroAlpha
+          shadowElevation = heroShadowPx
         }
-        .clip(
-          RoundedCornerShape(
-            (p * uiState.designConfig.cardCornerRadiusDp).coerceIn(0f, 28f).dp
-          )
-        )
+        .layout { measurable, _ ->
+          val fixed = Constraints.fixed(totalWidthInt, totalHeightInt)
+          val placeable = measurable.measure(fixed)
+          layout(clipWInt, clipHInt) {
+            placeable.place(((clipWInt - totalWidthInt) / 2), 0)
+          }
+        }
+        .background(MaterialTheme.colorScheme.background)
 
     Row(modifier = viewportHeroModifier) {
       // [Left / Single Pane]
@@ -1090,6 +1387,7 @@ private fun FloatingBarWebLayout(
             uiState = uiState,
             viewModel = viewModel,
             carouselOffsetPx = primaryCarouselOffsetPx,
+            heroTransitionProgress = p,
             onPaneWidthMeasured = { w -> primaryCarousel.paneWidthPx = w },
             onFocusPane = { viewModel.setActivePane(0) },
             onRequestOpenOverlay = onRequestOpenOverlay,
@@ -1139,27 +1437,27 @@ private fun FloatingBarWebLayout(
               heroDragLiftProgress = p,
               onExpandBar = viewModel::expandFloatingBar,
               onCollapseBar = viewModel::collapseFloatingBar,
-              onSwipeUpOpenTabs = {
-                viewModel.setActivePane(0)
-                viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
-              },
+              onSwipeUpOpenTabs = { onExecuteActionForPane(0, ToolbarActionId.TABS) },
               onSwipeUpDragProgress = onSwipeUpDragProgress,
               onSwipeUpDragEnd = { completed, velY ->
                 onSwipeUpDragEnd(0, completed, velY)
               },
               onSwipeTabDelta = { delta -> viewModel.stepAdjacentTab(delta, targetPane = 0) },
-              onHorizontalTabDrag = { dx -> handleCarouselDrag(primaryCarousel, dx) },
-              onHorizontalTabDragEnd = { dx, velX ->
-                handleCarouselDragEnd(primaryCarousel, primaryCarouselAnim, dx, velX)
+              onHorizontalTabDrag = { dx -> handleCarouselDrag(primaryCarousel, primaryCarouselAnim, dx) },
+              onHorizontalTabDragEnd = { _, velX ->
+                handleCarouselDragEnd(primaryCarousel, primaryCarouselAnim, velX)
               },
               onTriggerSplitGesture = { dirRight ->
                 viewModel.splitActiveTabWithGesture(dirRight, sourcePane = 0)
               },
               onCloseSplitPane = { viewModel.closeSplitKeepPane(keepPaneIndex = 1) },
+              onAiSwipeProgress = { p -> onAiSwipeProgress(0, p) },
+              onAiSwipeEnd = { completed, velY -> onAiSwipeEnd(0, completed, velY) },
               onFocusOmnibox = { viewModel.focusOmnibox(targetPane = 0) },
               onBlurOmnibox = viewModel::blurOmnibox,
               onOmniboxQueryChange = viewModel::updateOmniboxQuery,
               onOmniboxSubmit = { input -> viewModel.submitOmnibox(input, targetPane = 0) },
+              onSelectSuggestion = { url, origin -> onNavigateWithSiteDive(url, 0, origin) },
               onSelectSearchEngine = { engineId -> viewModel.updateSetting("searchEngineId", engineId) },
               onReloadOrStop = { viewModel.reloadOrStopInPane(0) },
               onExecuteAction = { action -> onExecuteActionForPane(0, action) },
@@ -1230,6 +1528,7 @@ private fun FloatingBarWebLayout(
             uiState = uiState,
             viewModel = viewModel,
             carouselOffsetPx = secondaryCarouselOffsetPx,
+            heroTransitionProgress = p,
             onPaneWidthMeasured = { w -> secondaryCarousel.paneWidthPx = w },
             onFocusPane = { viewModel.setActivePane(1) },
             onRequestOpenOverlay = onRequestOpenOverlay,
@@ -1267,27 +1566,27 @@ private fun FloatingBarWebLayout(
             heroDragLiftProgress = p,
             onExpandBar = viewModel::expandFloatingBar,
             onCollapseBar = viewModel::collapseFloatingBar,
-            onSwipeUpOpenTabs = {
-              viewModel.setActivePane(1)
-              viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
-            },
+            onSwipeUpOpenTabs = { onExecuteActionForPane(1, ToolbarActionId.TABS) },
             onSwipeUpDragProgress = onSwipeUpDragProgress,
             onSwipeUpDragEnd = { completed, velY ->
               onSwipeUpDragEnd(1, completed, velY)
             },
             onSwipeTabDelta = { delta -> viewModel.stepAdjacentTab(delta, targetPane = 1) },
-            onHorizontalTabDrag = { dx -> handleCarouselDrag(secondaryCarousel, dx) },
-            onHorizontalTabDragEnd = { dx, velX ->
-              handleCarouselDragEnd(secondaryCarousel, secondaryCarouselAnim, dx, velX)
+            onHorizontalTabDrag = { dx -> handleCarouselDrag(secondaryCarousel, secondaryCarouselAnim, dx) },
+            onHorizontalTabDragEnd = { _, velX ->
+              handleCarouselDragEnd(secondaryCarousel, secondaryCarouselAnim, velX)
             },
             onTriggerSplitGesture = { dirRight ->
               viewModel.splitActiveTabWithGesture(dirRight, sourcePane = 1)
             },
             onCloseSplitPane = { viewModel.closeSplitKeepPane(keepPaneIndex = 0) },
+            onAiSwipeProgress = { p -> onAiSwipeProgress(1, p) },
+            onAiSwipeEnd = { completed, velY -> onAiSwipeEnd(1, completed, velY) },
             onFocusOmnibox = { viewModel.focusOmnibox(targetPane = 1) },
             onBlurOmnibox = viewModel::blurOmnibox,
             onOmniboxQueryChange = viewModel::updateOmniboxQuery,
             onOmniboxSubmit = { input -> viewModel.submitOmnibox(input, targetPane = 1) },
+            onSelectSuggestion = { url, origin -> onNavigateWithSiteDive(url, 1, origin) },
             onSelectSearchEngine = { engineId -> viewModel.updateSetting("searchEngineId", engineId) },
             onReloadOrStop = { viewModel.reloadOrStopInPane(1) },
             onExecuteAction = { action -> onExecuteActionForPane(1, action) },
@@ -1343,26 +1642,26 @@ private fun FloatingBarWebLayout(
         heroDragLiftProgress = p,
         onExpandBar = viewModel::expandFloatingBar,
         onCollapseBar = viewModel::collapseFloatingBar,
-        onSwipeUpOpenTabs = {
-          viewModel.setActivePane(0)
-          viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER)
-        },
+        onSwipeUpOpenTabs = { onExecuteActionForPane(0, ToolbarActionId.TABS) },
         onSwipeUpDragProgress = onSwipeUpDragProgress,
         onSwipeUpDragEnd = { completed, velY ->
           onSwipeUpDragEnd(0, completed, velY)
         },
         onSwipeTabDelta = { delta -> viewModel.stepAdjacentTab(delta, targetPane = 0) },
-        onHorizontalTabDrag = { dx -> handleCarouselDrag(primaryCarousel, dx) },
-        onHorizontalTabDragEnd = { dx, velX ->
-          handleCarouselDragEnd(primaryCarousel, primaryCarouselAnim, dx, velX)
+        onHorizontalTabDrag = { dx -> handleCarouselDrag(primaryCarousel, primaryCarouselAnim, dx) },
+        onHorizontalTabDragEnd = { _, velX ->
+          handleCarouselDragEnd(primaryCarousel, primaryCarouselAnim, velX)
         },
         onTriggerSplitGesture = { dirRight ->
           viewModel.splitActiveTabWithGesture(dirRight, sourcePane = 0)
         },
+        onAiSwipeProgress = { p -> onAiSwipeProgress(0, p) },
+        onAiSwipeEnd = { completed, velY -> onAiSwipeEnd(0, completed, velY) },
         onFocusOmnibox = { viewModel.focusOmnibox(targetPane = 0) },
         onBlurOmnibox = viewModel::blurOmnibox,
         onOmniboxQueryChange = viewModel::updateOmniboxQuery,
         onOmniboxSubmit = { input -> viewModel.submitOmnibox(input, targetPane = 0) },
+        onSelectSuggestion = { url, origin -> onNavigateWithSiteDive(url, 0, origin) },
         onSelectSearchEngine = { engineId -> viewModel.updateSetting("searchEngineId", engineId) },
         onReloadOrStop = { viewModel.reloadOrStopInPane(0) },
         onExecuteAction = { action -> onExecuteActionForPane(0, action) },
@@ -1380,7 +1679,10 @@ private fun TabletopPostureLayout(
   uiState: BrowserUiState,
   postureState: FoldablePostureState,
   viewModel: BrowserViewModel,
+  onAiSwipeProgress: (Float) -> Unit,
+  onAiSwipeEnd: (completed: Boolean, velocityY: Float) -> Unit,
   onRequestOpenOverlay: (BrowserOverlay, SpatialDiveOrigin, Int) -> Unit,
+  onNavigateWithSiteDive: (String, Int, SpatialDiveOrigin) -> Unit,
   onExecuteActionForPane: (Int, ToolbarActionId) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -1430,7 +1732,9 @@ private fun TabletopPostureLayout(
         onOpenOmnibox = { viewModel.focusOmnibox(uiState.activePane) },
         onSelectTab = { tabId -> viewModel.selectTab(tabId, uiState.activePane) },
         onNewTab = { viewModel.createNewTab() },
-        onNavigateBookmark = viewModel::navigateUrlInFocusedPane,
+        onNavigateBookmark = { url, origin ->
+          onNavigateWithSiteDive(url, uiState.activePane, origin)
+        },
         onOpenLibrary = { onRequestOpenOverlay(BrowserOverlay.LIBRARY_PANEL, SpatialDiveOrigin(), 0) },
         onOpenInspector = { onRequestOpenOverlay(BrowserOverlay.SETTINGS_HUB, SpatialDiveOrigin(), 0) },
         modifier = Modifier.weight(1f),
@@ -1465,12 +1769,17 @@ private fun TabletopPostureLayout(
         supportsDualPane = postureState.supportsDualPane,
         onExpandBar = viewModel::expandFloatingBar,
         onCollapseBar = viewModel::collapseFloatingBar,
-        onSwipeUpOpenTabs = { viewModel.showOverlay(BrowserOverlay.TAB_SWITCHER) },
+        onSwipeUpOpenTabs = { onExecuteActionForPane(uiState.activePane, ToolbarActionId.TABS) },
         onSwipeTabDelta = { delta -> viewModel.stepAdjacentTab(delta) },
+        onAiSwipeProgress = onAiSwipeProgress,
+        onAiSwipeEnd = onAiSwipeEnd,
         onFocusOmnibox = { viewModel.focusOmnibox(uiState.activePane) },
         onBlurOmnibox = viewModel::blurOmnibox,
         onOmniboxQueryChange = viewModel::updateOmniboxQuery,
         onOmniboxSubmit = { input -> viewModel.submitOmnibox(input, uiState.omniboxTargetPane) },
+        onSelectSuggestion = { url, origin ->
+          onNavigateWithSiteDive(url, uiState.omniboxTargetPane, origin)
+        },
         onSelectSearchEngine = { engineId -> viewModel.updateSetting("searchEngineId", engineId) },
         onReloadOrStop = viewModel::reloadOrStopFocusedPane,
         onExecuteAction = { action -> onExecuteActionForPane(uiState.activePane, action) },
@@ -1494,6 +1803,7 @@ private fun BrowserTabContentPane(
   uiState: BrowserUiState,
   viewModel: BrowserViewModel,
   carouselOffsetPx: Float = 0f,
+  heroTransitionProgress: Float = 0f,
   onPaneWidthMeasured: (Float) -> Unit = {},
   onFocusPane: () -> Unit,
   onRequestOpenOverlay: (BrowserOverlay, SpatialDiveOrigin, Int) -> Unit,
@@ -1672,7 +1982,7 @@ private fun BrowserTabContentPane(
             ),
       ) {
         // Incoming adjacent tab window pulled in with physical 20.dp gap
-        if (hasActiveCarousel && adjTab != null) {
+        if (hasActiveCarousel && adjTab != null && adjTab.id != tab.id) {
           val adjOffsetPx =
             if (carouselOffsetPx > 0f) {
               carouselOffsetPx - (paneWidthPx + gapPx)
@@ -1695,6 +2005,8 @@ private fun BrowserTabContentPane(
               tab = adjTab,
               thumbnail = viewModel.tabThumbnails[adjTab.id],
               favicon = viewModel.tabFavicons[adjTab.id],
+              uiState = uiState,
+              viewModel = viewModel,
               renderStartPage = renderStartPage,
               modifier = Modifier.fillMaxSize(),
             )
@@ -1776,29 +2088,43 @@ private fun BrowserTabContentPane(
                   )
                 }
               } else {
-                AospWebViewViewport(
-                  tabId = tab.id,
-                  targetUrl = tab.url,
-                  renderPolicy = renderPolicy,
-                  webViewPool = viewModel.webViewPool,
-                  onNavigationUpdate = { url, title, isLoading, progress, caps ->
-                    viewModel.onWebViewNavigationUpdate(tab.id, url, title, isLoading, progress, caps)
-                  },
-                  onIconUpdate = { icon -> viewModel.onWebViewIconUpdate(tab.id, icon) },
-                  onRequestBlocked = { viewModel.onWebViewRequestBlocked(tab.id) },
-                  onScrollDelta = viewModel::onViewportScrollDelta,
-                  onPermissionChallenge = viewModel::onPermissionChallenge,
-                  onExternalAppRequest = viewModel::onExternalAppRequest,
-                  onDownloadRequest = viewModel::onDownloadRequest,
-                  modifier = Modifier.fillMaxSize(),
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                  if (heroTransitionProgress > 0.004f) {
+                    val cachedThumb = viewModel.tabThumbnails[tab.id]
+                    if (cachedThumb != null) {
+                      Image(
+                        bitmap = cachedThumb,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillWidth,
+                        alignment = Alignment.TopCenter,
+                        modifier = Modifier.fillMaxSize(),
+                      )
+                    }
+                  }
+                  AospWebViewViewport(
+                    tabId = tab.id,
+                    targetUrl = tab.url,
+                    renderPolicy = renderPolicy,
+                    webViewPool = viewModel.webViewPool,
+                    onNavigationUpdate = { url, title, isLoading, progress, caps ->
+                      viewModel.onWebViewNavigationUpdate(tab.id, url, title, isLoading, progress, caps)
+                    },
+                    onIconUpdate = { icon -> viewModel.onWebViewIconUpdate(tab.id, icon) },
+                    onRequestBlocked = { viewModel.onWebViewRequestBlocked(tab.id) },
+                    onScrollDelta = viewModel::onViewportScrollDelta,
+                    onPermissionChallenge = viewModel::onPermissionChallenge,
+                    onExternalAppRequest = viewModel::onExternalAppRequest,
+                    onDownloadRequest = viewModel::onDownloadRequest,
+                    modifier = Modifier.fillMaxSize(),
+                  )
+                }
               }
             }
           }
         }
 
         // Physical 20.dp frosted blur & directional drop-shadow seam between windows
-        if (hasActiveCarousel && adjTab != null) {
+        if (hasActiveCarousel && adjTab != null && adjTab.id != tab.id) {
           val seamX =
             if (carouselOffsetPx > 0f) {
               carouselOffsetPx - gapPx
@@ -1852,6 +2178,8 @@ private fun CarouselIncomingTabViewport(
   tab: TabUiModel,
   thumbnail: ImageBitmap?,
   favicon: ImageBitmap?,
+  uiState: BrowserUiState,
+  viewModel: BrowserViewModel,
   renderStartPage: @Composable (Modifier) -> Unit,
   modifier: Modifier = Modifier,
 ) {
@@ -1863,6 +2191,10 @@ private fun CarouselIncomingTabViewport(
       Box(modifier = modifier.background(MaterialTheme.colorScheme.background))
     }
     else -> {
+      val renderPolicy =
+        remember(tab.url, uiState.settings, uiState.sitePermissions) {
+          viewModel.resolveRenderPolicyForTab(tab.url)
+        }
       Box(
         modifier = modifier.background(MaterialTheme.colorScheme.background),
       ) {
@@ -1924,6 +2256,22 @@ private fun CarouselIncomingTabViewport(
             )
           }
         }
+        AospWebViewViewport(
+          tabId = tab.id,
+          targetUrl = tab.url,
+          renderPolicy = renderPolicy,
+          webViewPool = viewModel.webViewPool,
+          onNavigationUpdate = { url, title, isLoading, progress, caps ->
+            viewModel.onWebViewNavigationUpdate(tab.id, url, title, isLoading, progress, caps)
+          },
+          onIconUpdate = { icon -> viewModel.onWebViewIconUpdate(tab.id, icon) },
+          onRequestBlocked = { viewModel.onWebViewRequestBlocked(tab.id) },
+          onScrollDelta = viewModel::onViewportScrollDelta,
+          onPermissionChallenge = viewModel::onPermissionChallenge,
+          onExternalAppRequest = viewModel::onExternalAppRequest,
+          onDownloadRequest = viewModel::onDownloadRequest,
+          modifier = Modifier.fillMaxSize(),
+        )
       }
     }
   }

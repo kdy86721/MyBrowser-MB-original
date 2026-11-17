@@ -35,10 +35,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,7 +57,7 @@ fun LibraryOverlay(
   focusedUrl: String?,
   initialTab: Int = 0,
   onToggleCurrentBookmark: () -> Unit,
-  onOpenUrl: (String) -> Unit,
+  onOpenUrl: (String, SpatialDiveOrigin) -> Unit,
   onDeleteBookmark: (String) -> Unit,
   onDeleteHistoryItem: (String) -> Unit,
   onClearHistory: () -> Unit,
@@ -144,7 +148,7 @@ fun LibraryOverlay(
                   title = b.title,
                   subtitle = b.url,
                   badge = b.category,
-                  onClick = { onOpenUrl(b.url) },
+                  onClick = { origin -> onOpenUrl(b.url, origin) },
                   onDelete = { onDeleteBookmark(b.url) },
                 )
               }
@@ -174,7 +178,7 @@ fun LibraryOverlay(
                   title = h.title,
                   subtitle = h.url,
                   badge = "${h.visitCount}회",
-                  onClick = { onOpenUrl(h.url) },
+                  onClick = { origin -> onOpenUrl(h.url, origin) },
                   onDelete = { onDeleteHistoryItem(h.url) },
                 )
               }
@@ -191,15 +195,18 @@ private fun LibraryEntryCard(
   title: String,
   subtitle: String,
   badge: String,
-  onClick: () -> Unit,
+  onClick: (SpatialDiveOrigin) -> Unit,
   onDelete: () -> Unit,
 ) {
   val design = LocalDesignConfig.current
+  var cardBounds by remember { mutableStateOf(Rect.Zero) }
   SpringPressSurface(
-    onClick = onClick,
+    onClick = { onClick(SpatialDiveOrigin(cardBounds, design.cardCornerRadiusDp)) },
     shape = design.cardOuterShape(),
     unselectedColor = MaterialTheme.colorScheme.surface,
-    modifier = Modifier.fillMaxWidth(),
+    modifier =
+      Modifier.fillMaxWidth()
+        .onGloballyPositioned { cardBounds = it.boundsInRoot() },
   ) {
     Row(
       modifier =

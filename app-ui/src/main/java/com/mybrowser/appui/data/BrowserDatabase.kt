@@ -101,6 +101,7 @@ data class BrowserPreferences(
   val designConfigJson: String? = null,
   val sitePermissionsJson: String? = null,
   val tabSessionSnapshotJson: String? = null,
+  val aiConfigJson: String? = null,
 )
 
 class BrowserRepository(
@@ -118,6 +119,7 @@ class BrowserRepository(
         designConfigJson = prefs[KEY_DESIGN_CONFIG_JSON],
         sitePermissionsJson = prefs[KEY_SITE_PERMISSIONS_JSON],
         tabSessionSnapshotJson = prefs[KEY_TAB_SESSION_SNAPSHOT_JSON],
+        aiConfigJson = prefs[KEY_AI_CONFIG_JSON],
       )
     }
 
@@ -187,11 +189,16 @@ class BrowserRepository(
     context.browserSettingsStore.edit { it[KEY_TAB_SESSION_SNAPSHOT_JSON] = json }
   }
 
+  suspend fun setAiConfigJson(json: String) {
+    context.browserSettingsStore.edit { it[KEY_AI_CONFIG_JSON] = json }
+  }
+
   private companion object {
     val KEY_TOOLBAR_CONFIG_JSON = stringPreferencesKey("toolbar_config_json")
     val KEY_SETTINGS_STORE_JSON = stringPreferencesKey("settings_store_json")
     val KEY_DESIGN_CONFIG_JSON = stringPreferencesKey("design_config_json")
     val KEY_SITE_PERMISSIONS_JSON = stringPreferencesKey("site_permissions_json")
     val KEY_TAB_SESSION_SNAPSHOT_JSON = stringPreferencesKey("tab_session_snapshot_json")
+    val KEY_AI_CONFIG_JSON = stringPreferencesKey("ai_config_json")
   }
 }

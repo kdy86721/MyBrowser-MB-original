@@ -77,6 +77,91 @@ fun computeSpatialDiveBackgroundCornerDp(
 }
 
 /**
+ * Continuous Hero Tab-Fly corner radius (0f = fullscreen webview, 1f = tab card thumbnail):
+ * - Immediately engages barCornerRadiusDp upon lift-off (progress > 0.01f)
+ * - Interpolates smoothly between barCornerRadiusDp and cardCornerRadiusDp across 0f..1f
+ * - Maintains rounded corners until the final hairline before touching physical screen edges
+ */
+fun computeHeroWindowCornerDp(
+  progress: Float,
+  barCornerRadiusDp: Float,
+  cardCornerRadiusDp: Float,
+): Float {
+  val p = progress.coerceIn(0f, 1f)
+  if (p <= 0.004f) return 0f
+  val barCorner = barCornerRadiusDp.coerceIn(0f, 36f)
+  val cardCorner = cardCornerRadiusDp.coerceIn(0f, 36f)
+  if (p < 0.01f) {
+    val ramp = ((p - 0.004f) / 0.006f).coerceIn(0f, 1f)
+    return barCorner * ramp
+  }
+  val t = ((p - 0.01f) / 0.99f).coerceIn(0f, 1f)
+  return lerpFloat(barCorner, cardCorner, t)
+}
+
+/**
+ * Continuous Hero Tab-Fly window alpha:
+ * - On entry (0f -> 1f): stays fully opaque until 0.95f, then softly crossfades to 0f across 0.95f..1.0f
+ * - On return (1f -> 0f): remains opaque (1f) from the very start of lift-off through fullscreen arrival
+ */
+fun computeHeroWindowAlpha(
+  progress: Float,
+  isReturningToWeb: Boolean,
+): Float {
+  val p = progress.coerceIn(0f, 1f)
+  if (isReturningToWeb) return 1f
+  if (p <= 0.95f) return 1f
+  return (1f - ((p - 0.95f) / 0.05f)).coerceIn(0f, 1f)
+}
+
+@Immutable
+data class TabSwitcherBackdropDepth(
+  val scale: Float,
+  val blurDp: Float,
+  val scrimAlpha: Float,
+)
+
+/**
+ * Tab Switcher backdrop 3D depth choreography:
+ * - Scale: 0.92f <-> 1.0f synchronized with tabDrawerProgress
+ * - Blur: recedes 0.dp -> 24.dp during return (1f -> 0f), sharpens 14.dp -> 0.dp on entry (0f -> 1f)
+ */
+fun computeTabSwitcherBackdropDepth(
+  progress: Float,
+  isReturningToWeb: Boolean,
+): TabSwitcherBackdropDepth {
+  val p = progress.coerceIn(0f, 1f)
+  val scale = lerpFloat(0.92f, 1f, p)
+  val maxBlur = if (isReturningToWeb) 24f else 14f
+  val blurFraction = ((1f - p) / 0.85f).coerceIn(0f, 1f)
+  val blurDp = if (p >= 0.995f) 0f else (maxBlur * blurFraction)
+  val scrimAlpha = (0.48f * p).coerceIn(0f, 0.48f)
+  return TabSwitcherBackdropDepth(
+    scale = scale,
+    blurDp = blurDp,
+    scrimAlpha = scrimAlpha,
+  )
+}
+
+fun unscaleRectFromCenter(
+  rect: Rect,
+  rootBounds: Rect,
+  scale: Float,
+): Rect {
+  if (rect.width <= 1f || rect.height <= 1f || scale <= 0.05f || kotlin.math.abs(scale - 1f) < 0.001f) {
+    return rect
+  }
+  val cx = rootBounds.center.x
+  val cy = rootBounds.center.y
+  return Rect(
+    left = cx + (rect.left - cx) / scale,
+    top = cy + (rect.top - cy) / scale,
+    right = cx + (rect.right - cx) / scale,
+    bottom = cy + (rect.bottom - cy) / scale,
+  )
+}
+
+/**
  * Multi-layer Spatial Dive-In background choreography:
  * - Clips all 4 screen corners synced in real time with DesignConfig.barCornerRadiusDp
  * - Scales departing layer outward 1.0f -> 1.14f anchored at originRect.center

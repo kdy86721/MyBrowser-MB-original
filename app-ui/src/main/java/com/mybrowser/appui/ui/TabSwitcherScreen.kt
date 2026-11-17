@@ -1,8 +1,8 @@
 package com.mybrowser.appui.ui
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PushPin
@@ -88,12 +89,15 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.BlurredEdgeTreatment
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -141,6 +145,7 @@ fun TabSwitcherOverlay(
   tabThumbnails: Map<String, ImageBitmap> = emptyMap(),
   tabFavicons: Map<String, ImageBitmap> = emptyMap(),
   drawerProgress: Float = 1f,
+  isReturningToWeb: Boolean = false,
   heroArrivalTabId: String? = null,
   hasUndoableClosedTab: Boolean,
   tabSwipeToCloseEnabled: Boolean,
@@ -164,15 +169,28 @@ fun TabSwitcherOverlay(
   onRenameFolder: (folderId: String, newName: String) -> Unit,
   onSetFolderColor: (folderId: String, colorIndex: Int) -> Unit,
   onReportTabCardBounds: (Map<String, Rect>) -> Unit = {},
+  onReportHeroThumbnailBounds: (Map<String, Rect>) -> Unit = {},
   onDismiss: () -> Unit,
 ) {
   BackHandler(onBack = onDismiss)
 
   val p = drawerProgress.coerceIn(0f, 1f)
-  val neighborReveal = ((p - 0.30f) / 0.70f).coerceIn(0f, 1f)
-  val neighborScale = 0.88f + 0.12f * neighborReveal
-  val heroCardReveal = ((p - 0.80f) / 0.20f).coerceIn(0f, 1f)
-  val actionBarReveal = ((p - 0.25f) / 0.50f).coerceIn(0f, 1f)
+  val backdropDepth = computeTabSwitcherBackdropDepth(progress = p, isReturningToWeb = isReturningToWeb)
+  val neighborReveal =
+    if (isReturningToWeb) ((p - 0.04f) / 0.96f).coerceIn(0f, 1f)
+    else ((p - 0.18f) / 0.82f).coerceIn(0f, 1f)
+  val neighborScale =
+    if (isReturningToWeb) 1f
+    else 0.90f + 0.10f * neighborReveal
+  val heroCardReveal =
+    if (isReturningToWeb) {
+      if (p >= 0.996f) 1f else 0f
+    } else {
+      ((p - 0.95f) / 0.05f).coerceIn(0f, 1f)
+    }
+  val actionBarReveal =
+    if (isReturningToWeb) ((p - 0.08f) / 0.92f).coerceIn(0f, 1f)
+    else ((p - 0.25f) / 0.50f).coerceIn(0f, 1f)
 
   val design = LocalDesignConfig.current
   val speedScale = LocalAnimationSpeedScale.current
@@ -180,8 +198,10 @@ fun TabSwitcherOverlay(
   val density = LocalDensity.current
 
   val tabBounds = remember { mutableStateMapOf<String, Rect>() }
+  val heroThumbBounds = remember { mutableStateMapOf<String, Rect>() }
   val folderBounds = remember { mutableStateMapOf<String, Rect>() }
   var overlayOriginRoot by remember { mutableStateOf(Offset.Zero) }
+  var overlayRootBounds by remember { mutableStateOf(Rect.Zero) }
 
   var filterMode by remember { mutableStateOf(TabSwitcherFilterMode.ALL_TABS) }
   var searchQuery by remember { mutableStateOf("") }
@@ -227,6 +247,11 @@ fun TabSwitcherOverlay(
     if (removedTabKeys.isNotEmpty()) {
       removedTabKeys.forEach { tabBounds.remove(it) }
       onReportTabCardBounds(tabBounds.toMap())
+    }
+    val removedHeroKeys = heroThumbBounds.keys.filter { it !in activeTabIds }
+    if (removedHeroKeys.isNotEmpty()) {
+      removedHeroKeys.forEach { heroThumbBounds.remove(it) }
+      onReportHeroThumbnailBounds(heroThumbBounds.toMap())
     }
     val activeFolderIds = filteredFolders.map { it.id }.toSet()
     folderBounds.keys.filter { it !in activeFolderIds }.forEach { folderBounds.remove(it) }
@@ -362,16 +387,49 @@ fun TabSwitcherOverlay(
       }
     }
 
-  Surface(
-    color = MaterialTheme.colorScheme.background.copy(alpha = (p * 0.96f).coerceIn(0f, 0.96f)),
-    modifier = Modifier.fillMaxSize().then(multiTouchCollapseModifier),
+  val backdropBlurModifier =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && backdropDepth.blurDp > 0.25f) {
+      Modifier.blur(backdropDepth.blurDp.dp, edgeTreatment = BlurredEdgeTreatment.Rectangle)
+    } else {
+      Modifier
+    }
+  val backdropCornerDp =
+    if (p < 0.995f) computeHeroWindowCornerDp(1f - p, design.barCornerRadiusDp, design.barCornerRadiusDp)
+    else 0f
+
+  Box(
+    modifier =
+      Modifier.fillMaxSize().onGloballyPositioned { coords ->
+        val r = coords.boundsInRoot()
+        overlayRootBounds = r
+        overlayOriginRoot = r.topLeft
+      }
   ) {
-    Box(
+    if (backdropDepth.scrimAlpha > 0.002f) {
+      Box(
+        modifier =
+          Modifier.fillMaxSize()
+            .background(Color.Black.copy(alpha = backdropDepth.scrimAlpha))
+      )
+    }
+
+    Surface(
+      color = MaterialTheme.colorScheme.background.copy(alpha = (p * 0.96f).coerceIn(0f, 0.96f)),
       modifier =
-        Modifier.fillMaxSize().onGloballyPositioned { coords ->
-          overlayOriginRoot = coords.boundsInRoot().topLeft
-        }
+        Modifier.fillMaxSize()
+          .graphicsLayer {
+            scaleX = backdropDepth.scale
+            scaleY = backdropDepth.scale
+            transformOrigin = TransformOrigin.Center
+            if (backdropCornerDp > 0.1f) {
+              shape = RoundedCornerShape(backdropCornerDp.dp)
+              clip = true
+            }
+          }
+          .then(backdropBlurModifier)
+          .then(multiTouchCollapseModifier),
     ) {
+      Box(modifier = Modifier.fillMaxSize()) {
       Column(
         modifier =
           Modifier.fillMaxSize()
@@ -604,7 +662,6 @@ fun TabSwitcherOverlay(
                           isPrimary = tab.id == primaryTabId,
                           isSecondary = splitMode && tab.id == secondaryTabId,
                           splitMode = splitMode,
-                          isHeroArrival = isHeroCard && p >= 0.92f,
                           isBeingDragged = draggedTabId == tab.id,
                           isHoverMergeTarget = hoveredTabTargetId == tab.id && hoverReadyToMerge,
                           swipeToCloseEnabled =
@@ -612,8 +669,12 @@ fun TabSwitcherOverlay(
                           dragFolderEnabled = tabDragFolderEnabled,
                           accentColor = MaterialTheme.colorScheme.primary,
                           onPositioned = { rect ->
-                            tabBounds[tab.id] = rect
+                            tabBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
                             onReportTabCardBounds(tabBounds.toMap())
+                          },
+                          onHeroPositioned = { rect ->
+                            heroThumbBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
+                            onReportHeroThumbnailBounds(heroThumbBounds.toMap())
                           },
                           onStartDrag = { startCenter ->
                             draggedTabId = tab.id
@@ -641,7 +702,14 @@ fun TabSwitcherOverlay(
                               }
                             }
                           },
-                          onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
+                          onSelectTab = { pane, origin ->
+                            val restingOrigin =
+                              origin.copy(
+                                boundsInRoot =
+                                  unscaleRectFromCenter(origin.boundsInRoot, overlayRootBounds, backdropDepth.scale)
+                              )
+                            onSelectTab(tab.id, pane, restingOrigin)
+                          },
                           onTogglePin = { onTogglePinTab(tab.id) },
                           onCloseTab = { onCloseTab(tab.id) },
                         )
@@ -778,7 +846,13 @@ fun TabSwitcherOverlay(
                           ) {
                             rowTabs.forEach { tab ->
                               key(tab.id) {
-                                Box(modifier = Modifier.weight(1f)) {
+                                val isHeroCard = tab.id == heroArrivalTabId
+                                Box(
+                                  modifier =
+                                    Modifier.weight(1f).graphicsLayer {
+                                      alpha = if (isHeroCard) heroCardReveal else 1f
+                                    }
+                                ) {
                                   TabSwitcherCard(
                                     tab = tab,
                                     viewMode = tabViewMode,
@@ -787,7 +861,6 @@ fun TabSwitcherOverlay(
                                     isPrimary = tab.id == primaryTabId,
                                     isSecondary = splitMode && tab.id == secondaryTabId,
                                     splitMode = splitMode,
-                                    isHeroArrival = tab.id == heroArrivalTabId,
                                     isBeingDragged = draggedTabId == tab.id,
                                     isHoverMergeTarget =
                                       hoveredTabTargetId == tab.id && hoverReadyToMerge,
@@ -796,8 +869,12 @@ fun TabSwitcherOverlay(
                                     dragFolderEnabled = tabDragFolderEnabled,
                                     accentColor = folderColor,
                                     onPositioned = { rect ->
-                                      tabBounds[tab.id] = rect
+                                      tabBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
                                       onReportTabCardBounds(tabBounds.toMap())
+                                    },
+                                    onHeroPositioned = { rect ->
+                                      heroThumbBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
+                                      onReportHeroThumbnailBounds(heroThumbBounds.toMap())
                                     },
                                     onStartDrag = { startCenter ->
                                       draggedTabId = tab.id
@@ -833,7 +910,14 @@ fun TabSwitcherOverlay(
                                         }
                                       }
                                     },
-                                    onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
+                                    onSelectTab = { pane, origin ->
+                                      val restingOrigin =
+                                        origin.copy(
+                                          boundsInRoot =
+                                            unscaleRectFromCenter(origin.boundsInRoot, overlayRootBounds, backdropDepth.scale)
+                                        )
+                                      onSelectTab(tab.id, pane, restingOrigin)
+                                    },
                                     onTogglePin = { onTogglePinTab(tab.id) },
                                     onCloseTab = { onCloseTab(tab.id) },
                                   )
@@ -940,7 +1024,6 @@ fun TabSwitcherOverlay(
                               isPrimary = tab.id == primaryTabId,
                               isSecondary = splitMode && tab.id == secondaryTabId,
                               splitMode = splitMode,
-                              isHeroArrival = isHeroCard && p >= 0.92f,
                               isBeingDragged = draggedTabId == tab.id,
                               isHoverMergeTarget =
                                 hoveredTabTargetId == tab.id && hoverReadyToMerge,
@@ -949,8 +1032,12 @@ fun TabSwitcherOverlay(
                               dragFolderEnabled = tabDragFolderEnabled,
                               accentColor = null,
                               onPositioned = { rect ->
-                                tabBounds[tab.id] = rect
+                                tabBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
                                 onReportTabCardBounds(tabBounds.toMap())
+                              },
+                              onHeroPositioned = { rect ->
+                                heroThumbBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
+                                onReportHeroThumbnailBounds(heroThumbBounds.toMap())
                               },
                               onStartDrag = { startCenter ->
                                 draggedTabId = tab.id
@@ -978,7 +1065,14 @@ fun TabSwitcherOverlay(
                                   }
                                 }
                               },
-                              onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
+                              onSelectTab = { pane, origin ->
+                                val restingOrigin =
+                                  origin.copy(
+                                    boundsInRoot =
+                                      unscaleRectFromCenter(origin.boundsInRoot, overlayRootBounds, backdropDepth.scale)
+                                  )
+                                onSelectTab(tab.id, pane, restingOrigin)
+                              },
                               onTogglePin = { onTogglePinTab(tab.id) },
                               onCloseTab = { onCloseTab(tab.id) },
                             )
@@ -1026,7 +1120,6 @@ fun TabSwitcherOverlay(
                             isPrimary = tab.id == primaryTabId,
                             isSecondary = splitMode && tab.id == secondaryTabId,
                             splitMode = splitMode,
-                            isHeroArrival = isHeroCard && p >= 0.92f,
                             isBeingDragged = draggedTabId == tab.id,
                             isHoverMergeTarget =
                               hoveredTabTargetId == tab.id && hoverReadyToMerge,
@@ -1035,8 +1128,12 @@ fun TabSwitcherOverlay(
                             dragFolderEnabled = tabDragFolderEnabled,
                             accentColor = null,
                             onPositioned = { rect ->
-                              tabBounds[tab.id] = rect
+                              tabBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
                               onReportTabCardBounds(tabBounds.toMap())
+                            },
+                            onHeroPositioned = { rect ->
+                              heroThumbBounds[tab.id] = unscaleRectFromCenter(rect, overlayRootBounds, backdropDepth.scale)
+                              onReportHeroThumbnailBounds(heroThumbBounds.toMap())
                             },
                             onStartDrag = { startCenter ->
                               draggedTabId = tab.id
@@ -1064,7 +1161,14 @@ fun TabSwitcherOverlay(
                                 }
                               }
                             },
-                            onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
+                            onSelectTab = { pane, origin ->
+                              val restingOrigin =
+                                origin.copy(
+                                  boundsInRoot =
+                                    unscaleRectFromCenter(origin.boundsInRoot, overlayRootBounds, backdropDepth.scale)
+                                )
+                              onSelectTab(tab.id, pane, restingOrigin)
+                            },
                             onTogglePin = { onTogglePinTab(tab.id) },
                             onCloseTab = { onCloseTab(tab.id) },
                           )
@@ -1225,6 +1329,7 @@ fun TabSwitcherOverlay(
           }
         }
       }
+    }
     }
   }
 
@@ -1490,13 +1595,13 @@ private fun TabSwitcherCard(
   isPrimary: Boolean,
   isSecondary: Boolean,
   splitMode: Boolean,
-  isHeroArrival: Boolean = false,
   isBeingDragged: Boolean,
   isHoverMergeTarget: Boolean,
   swipeToCloseEnabled: Boolean,
   dragFolderEnabled: Boolean,
   accentColor: Color?,
   onPositioned: (Rect) -> Unit,
+  onHeroPositioned: (Rect) -> Unit = onPositioned,
   onStartDrag: (Offset) -> Unit,
   onDragDelta: (Offset) -> Unit,
   onEndDrag: () -> Unit,
@@ -1505,17 +1610,13 @@ private fun TabSwitcherCard(
   onCloseTab: () -> Unit,
 ) {
   val design = LocalDesignConfig.current
-  val speedScale = LocalAnimationSpeedScale.current
   val isActive = isPrimary || isSecondary
   var selfRect by remember { mutableStateOf(Rect.Zero) }
-  val heroSettleScale =
-    remember(tab.id, isHeroArrival) {
-      Animatable(if (isHeroArrival) 0.90f else 1f)
-    }
-  LaunchedEffect(tab.id, isHeroArrival) {
-    if (isHeroArrival) {
-      heroSettleScale.animateTo(1f, BrowserMotion.morphingPillSpring(speedScale))
-    }
+  var heroThumbRect by remember { mutableStateOf(Rect.Zero) }
+
+  val resolvedHeroRect = {
+    if (viewMode == TabViewMode.THUMBNAIL_GRID && heroThumbRect.width > 1f) heroThumbRect
+    else selfRect
   }
 
   val latestSwipeEnabled by rememberUpdatedState(swipeToCloseEnabled)
@@ -1563,7 +1664,7 @@ private fun TabSwitcherCard(
 
   val cardContent: @Composable () -> Unit = {
     SpringPressSurface(
-      onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
+      onClick = { onSelectTab(0, SpatialDiveOrigin(resolvedHeroRect(), design.cardCornerRadiusDp)) },
       selected = isActive || isHoverMergeTarget || tab.isPinned,
       shape = design.cardOuterShape(),
       unselectedColor = MaterialTheme.colorScheme.surface,
@@ -1578,7 +1679,7 @@ private fun TabSwitcherCard(
         Modifier.fillMaxWidth()
           .graphicsLayer {
             alpha = if (isBeingDragged) 0.35f else 1f
-            val baseScale = if (isHoverMergeTarget) 1.03f else heroSettleScale.value
+            val baseScale = if (isHoverMergeTarget) 1.03f else 1f
             scaleX = baseScale
             scaleY = baseScale
           }
@@ -1586,6 +1687,10 @@ private fun TabSwitcherCard(
             val r = coords.boundsInRoot()
             selfRect = r
             onPositioned(r)
+            if (viewMode == TabViewMode.COMPACT_LIST) {
+              heroThumbRect = r
+              onHeroPositioned(r)
+            }
           }
           .then(dragModifier)
           .testTag("tab_card_${tab.id}"),
@@ -1647,11 +1752,18 @@ private fun TabSwitcherCard(
             }
           }
 
-          // 라이브 웹페이지 축소 썸네일 프리뷰
+          // 라이브 웹페이지 축소 썸네일 프리뷰 (Hero Tab-Fly 목표 좌표 기준 영역)
           Surface(
             shape = design.cardInnerShape(),
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            modifier = Modifier.fillMaxWidth().aspectRatio(1.12f),
+            modifier =
+              Modifier.fillMaxWidth()
+                .aspectRatio(1.12f)
+                .onGloballyPositioned { coords ->
+                  val r = coords.boundsInRoot()
+                  heroThumbRect = r
+                  onHeroPositioned(r)
+                },
           ) {
             Box(modifier = Modifier.fillMaxSize()) {
               if (thumbnail != null) {
@@ -1725,7 +1837,7 @@ private fun TabSwitcherCard(
                 if (splitMode) {
                   Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     Surface(
-                      onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
+                      onClick = { onSelectTab(0, SpatialDiveOrigin(resolvedHeroRect(), design.cardCornerRadiusDp)) },
                       shape = design.cardInnerShape(),
                       color = MaterialTheme.colorScheme.primaryContainer,
                     ) {
@@ -1737,7 +1849,7 @@ private fun TabSwitcherCard(
                       )
                     }
                     Surface(
-                      onClick = { onSelectTab(1, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
+                      onClick = { onSelectTab(1, SpatialDiveOrigin(resolvedHeroRect(), design.cardCornerRadiusDp)) },
                       shape = design.cardInnerShape(),
                       color = MaterialTheme.colorScheme.secondaryContainer,
                     ) {
@@ -1803,10 +1915,10 @@ private fun TabSwitcherCard(
             if (splitMode) {
               Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(
-                  onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) }
+                  onClick = { onSelectTab(0, SpatialDiveOrigin(resolvedHeroRect(), design.cardCornerRadiusDp)) }
                 ) { Text("왼쪽") }
                 TextButton(
-                  onClick = { onSelectTab(1, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) }
+                  onClick = { onSelectTab(1, SpatialDiveOrigin(resolvedHeroRect(), design.cardCornerRadiusDp)) }
                 ) { Text("오른쪽") }
               }
             }

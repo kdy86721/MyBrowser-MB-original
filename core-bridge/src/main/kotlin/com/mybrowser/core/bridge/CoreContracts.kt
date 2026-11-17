@@ -228,6 +228,8 @@ interface ToolbarConfigContract {
 //     pub confirm_external_app: bool,
 //     pub startup_behavior: String,        // "RESTORE_TABS" | "SPEED_DIAL" | "BLANK_PAGE"
 //     pub background_tab_sleep: bool,
+//     pub adjacent_tab_keep_alive: bool,
+//     pub adjacent_tab_keep_alive_count: i32, // 1 | 2 | 3
 //     pub auto_close_days: i32,            // 0 | 1 | 7 | 30
 //     pub download_tree_uri: String,
 //     pub confirm_before_download: bool,
@@ -284,6 +286,44 @@ interface SitePermissionsContract {
   fun listDomainOverridesJson(query: String): String
   fun exportStateJson(): String
   fun restoreStateJson(rawJson: String): String
+}
+
+// [RUST-MIGRATION-TARGET]
+// #[derive(uniffi::Record, Debug, Clone)]
+// pub struct AiCliConfigRecord {
+//     pub provider_id: String,          // "google_gemini" | "kimi" | "openai_codex" | "anthropic_claude" | "custom"
+//     pub execution_mode: String,       // "LOCAL_BINARY_CLI" | "LOCALHOST_BRIDGE" | "DIRECT_API"
+//     pub cli_command: String,
+//     pub cli_args: String,
+//     pub localhost_url: String,
+//     pub api_endpoint_url: String,
+//     pub model_name: String,
+//     pub api_key: String,
+//     pub default_prompt_template: String,
+//     pub auto_send_on_drag: bool,
+//     pub foldable_layout: String,      // "RIGHT_PANEL" | "CENTER_SHEET"
+// }
+//
+// #[uniffi::export(with_foreign)]
+// pub trait AiBridgeContract: Send + Sync {
+//     fn get_ai_config_json(&self) -> String;
+//     fn update_ai_config(&self, key: String, value: String) -> String;
+//     fn restore_ai_config_json(&self, raw_json: String) -> String;
+//     fn reset_ai_config_defaults(&self) -> String;
+//     fn get_provider_presets_json(&self) -> String;
+//     fn build_composed_prompt(&self, page_url: String, page_title: String, user_message: String) -> String;
+//     fn build_execution_plan_json(&self, page_url: String, page_title: String, user_message: String) -> String;
+//     fn parse_stream_chunk_json(&self, provider_id: String, raw_line: String) -> String;
+// }
+interface AiBridgeContract {
+  fun getAiConfigJson(): String
+  fun updateAiConfig(key: String, value: String): String
+  fun restoreAiConfigJson(rawJson: String): String
+  fun resetAiConfigDefaults(): String
+  fun getProviderPresetsJson(): String
+  fun buildComposedPrompt(pageUrl: String, pageTitle: String, userMessage: String): String
+  fun buildExecutionPlanJson(pageUrl: String, pageTitle: String, userMessage: String): String
+  fun parseStreamChunkJson(providerId: String, rawLine: String): String
 }
 
 internal object JsonMini {
