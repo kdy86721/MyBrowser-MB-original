@@ -3,10 +3,17 @@ package com.example
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ApplicationProvider
 import com.mybrowser.appui.foldable.BrowserPostureMode
 import com.mybrowser.appui.foldable.FoldablePostureState
+import com.mybrowser.appui.ui.ExpressiveSprings
+import com.mybrowser.appui.ui.SpatialDiveOrigin
+import com.mybrowser.appui.ui.computeDiffusedAmbientElevationDp
+import com.mybrowser.appui.ui.computeOutwardHaloBlurDp
+import com.mybrowser.appui.ui.computeSpatialDiveBackgroundCornerDp
+import com.mybrowser.appui.ui.computeSpatialDiveCornerDp
 import com.mybrowser.appui.viewmodel.BrowserViewModel
 import com.mybrowser.appui.viewmodel.TabSortMode
 import com.mybrowser.appui.viewmodel.TabViewMode
@@ -138,5 +145,72 @@ class ExampleRobolectricTest {
 
     vm.closeTab(createdTabId)
     assertNull(vm.tabFavicons[createdTabId])
+  }
+
+  @Test
+  fun `expressive springs and spatial dive origin validate physics and bounds`() {
+    assertEquals(0.76f, ExpressiveSprings.Spatial.dampingRatio, 0.001f)
+    assertEquals(260f, ExpressiveSprings.Spatial.stiffness, 0.001f)
+    assertEquals(0.62f, ExpressiveSprings.Micro.dampingRatio, 0.001f)
+    assertEquals(420f, ExpressiveSprings.Micro.stiffness, 0.001f)
+
+    // Speed multiplier scales stiffness quadratically (base * s^2) and clamps to [0.5, 2.0]
+    val slowSpatial = ExpressiveSprings.spatial<Float>(0.2f)
+    assertEquals(0.76f, slowSpatial.dampingRatio, 0.001f)
+    assertEquals(260f * 0.25f, slowSpatial.stiffness, 0.01f)
+
+    val fastMicro = ExpressiveSprings.micro<Float>(1.5f)
+    assertEquals(0.62f, fastMicro.dampingRatio, 0.001f)
+    assertEquals(420f * 2.25f, fastMicro.stiffness, 0.01f)
+
+    val cappedSpatial = ExpressiveSprings.spatial<Float>(3.5f)
+    assertEquals(260f * 4.0f, cappedSpatial.stiffness, 0.01f)
+
+    val emptyOrigin = SpatialDiveOrigin()
+    assertFalse(emptyOrigin.isValid())
+
+    val validOrigin = SpatialDiveOrigin(boundsInRoot = Rect(12f, 24f, 220f, 340f), cornerRadiusDp = 24f)
+    assertTrue(validOrigin.isValid())
+    assertEquals(24f, validOrigin.cornerRadiusDp, 0.001f)
+  }
+
+  @Test
+  fun `viewModel propagates animationSpeedScale expandBarOnUrlEdit and forceZoomEnabled`() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val vm = BrowserViewModel(app)
+
+    assertEquals(1.0f, vm.uiState.value.designConfig.animationSpeedScale, 0.001f)
+    assertTrue(vm.uiState.value.settings.expandBarOnUrlEdit)
+    assertFalse(vm.uiState.value.settings.forceZoomEnabled)
+    assertFalse(vm.resolveRenderPolicyForTab("https://example.org").forceZoomEnabled)
+
+    vm.updateDesignParam("animationSpeedScale", "1.75")
+    assertEquals(1.75f, vm.uiState.value.designConfig.animationSpeedScale, 0.001f)
+
+    vm.updateSetting("expandBarOnUrlEdit", "false")
+    assertFalse(vm.uiState.value.settings.expandBarOnUrlEdit)
+
+    vm.updateSetting("forceZoomEnabled", "true")
+    assertTrue(vm.uiState.value.settings.forceZoomEnabled)
+    assertTrue(vm.resolveRenderPolicyForTab("https://example.org").forceZoomEnabled)
+  }
+
+  @Test
+  fun `floating bar outward halo and spatial dive corners sync cleanly`() {
+    // Multi-layer diffused ambient shadow is always >= 28.dp even at 0 blur
+    assertTrue(computeDiffusedAmbientElevationDp(blurRadiusDp = 0f, isFocused = false) >= 28f)
+    assertEquals(38f, computeDiffusedAmbientElevationDp(blurRadiusDp = 32f, isFocused = false), 0.01f)
+    assertEquals(44f, computeDiffusedAmbientElevationDp(blurRadiusDp = 32f, isFocused = true), 0.01f)
+    assertTrue(computeOutwardHaloBlurDp(blurRadiusDp = 18f, isFocused = true) > computeOutwardHaloBlurDp(blurRadiusDp = 18f, isFocused = false))
+
+    // Foreground expanding card morphs corners from originCornerDp -> barCornerRadiusDp
+    assertEquals(20f, computeSpatialDiveCornerDp(originCornerDp = 20f, barCornerRadiusDp = 32f, progress = 0f), 0.01f)
+    assertEquals(26f, computeSpatialDiveCornerDp(originCornerDp = 20f, barCornerRadiusDp = 32f, progress = 0.5f), 0.01f)
+    assertEquals(32f, computeSpatialDiveCornerDp(originCornerDp = 20f, barCornerRadiusDp = 32f, progress = 1f), 0.01f)
+
+    // Zooming background corners remain synced to barCornerRadiusDp throughout dive
+    assertEquals(0f, computeSpatialDiveBackgroundCornerDp(barCornerRadiusDp = 32f, progress = 0f), 0.01f)
+    assertEquals(32f, computeSpatialDiveBackgroundCornerDp(barCornerRadiusDp = 32f, progress = 0.25f), 0.01f)
+    assertEquals(32f, computeSpatialDiveBackgroundCornerDp(barCornerRadiusDp = 32f, progress = 1f), 0.01f)
   }
 }

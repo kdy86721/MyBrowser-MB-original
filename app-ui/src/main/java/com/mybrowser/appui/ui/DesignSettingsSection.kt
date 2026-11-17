@@ -29,6 +29,7 @@ import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.BrightnessAuto
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.LightMode
@@ -37,9 +38,11 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.RoundedCorner
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Speed
 import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
 import androidx.compose.material.icons.outlined.ViewAgenda
+import androidx.compose.material.icons.outlined.ZoomIn
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -153,7 +156,8 @@ internal fun LazyListScope.designSettingsItems(
         AnimatedContent(
           targetState = previewSplit,
           transitionSpec = {
-            fadeIn(BrowserMotion.expressiveSpring()) togetherWith fadeOut(BrowserMotion.snappySpring())
+            fadeIn(BrowserMotion.expressiveSpring(designConfig.animationSpeedScale)) togetherWith
+              fadeOut(BrowserMotion.snappySpring(designConfig.animationSpeedScale))
           },
           label = "DesignPreviewSplitMode",
           modifier = Modifier.fillMaxSize(),
@@ -423,6 +427,38 @@ internal fun LazyListScope.designSettingsItems(
     }
   }
 
+  item(key = "motion_and_url_edit") {
+    SettingsGroupCard(title = "모션 속도 · 주소창 편집", icon = Icons.Outlined.Speed) {
+      val speedText =
+        when {
+          designConfig.animationSpeedScale <= 0.75f ->
+            "느리게 ${String.format(Locale.US, "%.1f", designConfig.animationSpeedScale)}x"
+          designConfig.animationSpeedScale >= 1.35f ->
+            "빠르게 ${String.format(Locale.US, "%.1f", designConfig.animationSpeedScale)}x"
+          else ->
+            "${String.format(Locale.US, "%.1f", designConfig.animationSpeedScale)}x"
+        }
+      DesignFloatSliderRow(
+        label = "애니메이션 속도",
+        valueText = speedText,
+        value = designConfig.animationSpeedScale,
+        valueRange = 0.5f..2.0f,
+        stepSize = 0.1f,
+        onValueChange = {
+          onUpdateDesignParam("animationSpeedScale", String.format(Locale.US, "%.1f", it))
+        },
+        testTag = "slider_animation_speed",
+      )
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+      SettingsIconSwitchRow(
+        icon = Icons.Outlined.Edit,
+        title = "주소 편집 시 바 확장 표시",
+        checked = settings.expandBarOnUrlEdit,
+        onCheckedChange = { onUpdateSetting("expandBarOnUrlEdit", it.toString()) },
+      )
+    }
+  }
+
   item(key = "theme_and_typography") {
     SettingsGroupCard(title = "테마 · 강조 색상 · 웹 화면", icon = Icons.Outlined.Palette) {
       Row(
@@ -485,6 +521,13 @@ internal fun LazyListScope.designSettingsItems(
         title = "웹페이지 강제 다크",
         checked = settings.forceWebDark,
         onCheckedChange = { onUpdateSetting("forceWebDark", it.toString()) },
+      )
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+      SettingsIconSwitchRow(
+        icon = Icons.Outlined.ZoomIn,
+        title = "사이트 강제 확대·축소",
+        checked = settings.forceZoomEnabled,
+        onCheckedChange = { onUpdateSetting("forceZoomEnabled", it.toString()) },
       )
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
       SettingsIconSwitchRow(
@@ -597,7 +640,7 @@ private fun DesignFloatSliderRow(
     ) {
       Text(label, style = MaterialTheme.typography.labelLarge)
       Surface(
-        shape = CircleShape,
+        shape = LocalDesignConfig.current.cardInnerShape(),
         color = MaterialTheme.colorScheme.primaryContainer,
       ) {
         Text(

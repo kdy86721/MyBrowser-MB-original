@@ -40,7 +40,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,8 +64,8 @@ fun StartPageContent(
   dohProviderLabel: String,
   bookmarks: List<BookmarkEntity>,
   onOpenOmnibox: () -> Unit,
-  onNavigateBookmark: (String) -> Unit,
-  onOpenInspector: () -> Unit,
+  onNavigateBookmark: (url: String, origin: SpatialDiveOrigin) -> Unit,
+  onOpenInspector: (SpatialDiveOrigin) -> Unit,
   onToggleSplit: () -> Unit,
   onScrollDelta: (Int) -> Unit = {},
   modifier: Modifier = Modifier,
@@ -223,11 +226,16 @@ fun StartPageContent(
       }
 
       // 프라이버시 상태 스트립
+      var inspectorRect by remember { mutableStateOf(Rect.Zero) }
+      val cardCornerDp = LocalDesignConfig.current.cardCornerRadiusDp
       SpringPressSurface(
-          onClick = onOpenInspector,
+          onClick = { onOpenInspector(SpatialDiveOrigin(inspectorRect, cardCornerDp)) },
           shape = LocalDesignConfig.current.cardOuterShape(),
           unselectedColor = MaterialTheme.colorScheme.surface,
-          modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(),
+          modifier =
+            Modifier.widthIn(max = 680.dp)
+              .fillMaxWidth()
+              .onGloballyPositioned { inspectorRect = it.boundsInRoot() },
         ) {
           Row(
             modifier = Modifier.fillMaxWidth().padding(BrowserSpacing.Grid2),
@@ -336,7 +344,7 @@ fun StartPageContent(
                 rowItems.forEach { bookmark ->
                   SpeedDialCard(
                     bookmark = bookmark,
-                    onClick = { onNavigateBookmark(bookmark.url) },
+                    onClick = { origin -> onNavigateBookmark(bookmark.url, origin) },
                     modifier = Modifier.weight(1f),
                   )
                 }
@@ -352,14 +360,19 @@ fun StartPageContent(
 @Composable
 private fun SpeedDialCard(
   bookmark: BookmarkEntity,
-  onClick: () -> Unit,
+  onClick: (SpatialDiveOrigin) -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  var tileRect by remember { mutableStateOf(Rect.Zero) }
+  val cornerDp = LocalDesignConfig.current.cardCornerRadiusDp
   SpringPressSurface(
-    onClick = onClick,
+    onClick = { onClick(SpatialDiveOrigin(tileRect, cornerDp)) },
     shape = LocalDesignConfig.current.cardOuterShape(),
     unselectedColor = MaterialTheme.colorScheme.surface,
-    modifier = modifier.height(76.dp),
+    modifier =
+      modifier
+        .height(76.dp)
+        .onGloballyPositioned { tileRect = it.boundsInRoot() },
   ) {
     Row(
       modifier =

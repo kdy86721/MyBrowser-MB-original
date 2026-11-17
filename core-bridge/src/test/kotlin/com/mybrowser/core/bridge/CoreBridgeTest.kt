@@ -170,6 +170,8 @@ class CoreBridgeTest {
     settings.updateSetting("accentPreset", "EMERALD")
     settings.updateSetting("webFontZoomPercent", "185")
     settings.updateSetting("hideStatusBar", "true")
+    settings.updateSetting("forceZoomEnabled", "true")
+    settings.updateSetting("expandBarOnUrlEdit", "false")
     settings.updateSetting("blockerLevel", "STRICT")
     settings.updateSetting("autoCloseDays", "7")
     settings.updateSetting("tabViewMode", "COMPACT_LIST")
@@ -180,6 +182,8 @@ class CoreBridgeTest {
     assertTrue(updated.contains(""""accentPreset":"EMERALD""""))
     assertTrue(updated.contains(""""webFontZoomPercent":185"""))
     assertTrue(updated.contains(""""hideStatusBar":true"""))
+    assertTrue(updated.contains(""""forceZoomEnabled":true"""))
+    assertTrue(updated.contains(""""expandBarOnUrlEdit":false"""))
     assertTrue(updated.contains(""""blockerLevel":"STRICT""""))
     assertTrue(updated.contains(""""autoCloseDays":7"""))
     assertTrue(updated.contains(""""tabViewMode":"COMPACT_LIST""""))
@@ -208,6 +212,9 @@ class CoreBridgeTest {
     design.updateDesignParam("barHorizontalBias", "-0.6")
     design.updateDesignParam("barBottomOffsetDp", "24")
     design.updateDesignParam("barOpacity", "0.7")
+    design.updateDesignParam("animationSpeedScale", "0.2") // clamps to 0.5f
+    assertTrue(design.getDesignConfigJson().contains(""""animationSpeedScale":0.5"""))
+    design.updateDesignParam("animationSpeedScale", "1.65")
     val json = design.updateDesignParam("barBlurRadiusDp", "48") // clamps to 32f
 
     assertTrue(json.contains(""""iconCornerRadiusDp":8.0"""))
@@ -219,6 +226,7 @@ class CoreBridgeTest {
     assertTrue(json.contains(""""barBottomOffsetDp":24.0"""))
     assertTrue(json.contains(""""barOpacity":0.7"""))
     assertTrue(json.contains(""""barBlurRadiusDp":32.0"""))
+    assertTrue(json.contains(""""animationSpeedScale":1.65"""))
 
     val restored = DesignConfigImpl().restoreDesignConfigJson(json)
     assertEquals(json, restored)

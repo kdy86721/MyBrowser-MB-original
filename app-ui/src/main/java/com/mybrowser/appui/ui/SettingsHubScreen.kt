@@ -6,10 +6,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -33,7 +35,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.FindInPage
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -89,6 +91,7 @@ import androidx.compose.material.icons.outlined.Tab
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
 import androidx.compose.material.icons.outlined.WebAsset
+import androidx.compose.material.icons.outlined.ZoomIn
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -102,6 +105,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -109,10 +113,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.mybrowser.appui.foldable.FoldablePostureState
 import com.mybrowser.appui.network.DohLookupResult
@@ -176,12 +186,19 @@ fun SettingsHubOverlay(
   onSetDomainSiteOverride: (domain: String, key: String, value: String) -> Unit,
   onResetDomainOverrides: (domain: String) -> Unit,
   onRunDohProbe: (String) -> Unit,
-  onOpenLibrary: () -> Unit,
+  onOpenLibrary: (SpatialDiveOrigin) -> Unit,
   onDismiss: () -> Unit,
 ) {
   val isMasterDetail = postureState.supportsDualPane
   var selectedPillar by remember { mutableStateOf(SettingsPillar.DESIGN) }
   var isDetailOpenOnCover by remember { mutableStateOf(false) }
+  var coverDetailOrigin by remember { mutableStateOf(SpatialDiveOrigin()) }
+  val coverDiveAnim = remember { Animatable(0f) }
+
+  LaunchedEffect(isMasterDetail, isDetailOpenOnCover, designConfig.animationSpeedScale) {
+    val target = if (!isMasterDetail && isDetailOpenOnCover) 1f else 0f
+    coverDiveAnim.animateTo(target, ExpressiveSprings.spatial(designConfig.animationSpeedScale))
+  }
 
   BackHandler {
     if (!isMasterDetail && isDetailOpenOnCover) {
@@ -191,14 +208,12 @@ fun SettingsHubOverlay(
     }
   }
 
+  // True Edge-to-Edge opaque fill behind system bars
   Surface(
     color = MaterialTheme.colorScheme.background,
-    modifier =
-      Modifier.fillMaxSize()
-        .statusBarsPadding()
-        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
+    modifier = Modifier.fillMaxSize(),
   ) {
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
       Row(
         modifier =
           Modifier.fillMaxWidth()
@@ -210,7 +225,7 @@ fun SettingsHubOverlay(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
         ) {
-          if (!isMasterDetail && isDetailOpenOnCover) {
+          if (!isMasterDetail && (isDetailOpenOnCover || coverDiveAnim.value > 0.05f)) {
             SpringIconButton(onClick = { isDetailOpenOnCover = false }) {
               Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "카테고리로 돌아가기")
             }
@@ -226,10 +241,14 @@ fun SettingsHubOverlay(
           verticalAlignment = Alignment.CenterVertically,
           horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
         ) {
+          var libButtonRect by remember { mutableStateOf(Rect.Zero) }
           SpringPressSurface(
-            onClick = onOpenLibrary,
+            onClick = {
+              onOpenLibrary(SpatialDiveOrigin(libButtonRect, designConfig.cardCornerRadiusDp))
+            },
             shape = designConfig.cardInnerShape(),
             unselectedColor = MaterialTheme.colorScheme.surfaceVariant,
+            modifier = Modifier.onGloballyPositioned { libButtonRect = it.boundsInRoot() },
           ) {
             Row(
               modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -283,7 +302,7 @@ fun SettingsHubOverlay(
             showSelectionHighlight = true,
             postureState = postureState,
             abiBackend = abiInfo.backendKind,
-            onSelectPillar = { selectedPillar = it },
+            onSelectPillar = { pillar, _ -> selectedPillar = pillar },
             modifier = Modifier.width(232.dp).fillMaxHeight(),
           )
           Box(
@@ -295,10 +314,11 @@ fun SettingsHubOverlay(
           AnimatedContent(
             targetState = selectedPillar,
             transitionSpec = {
-              (slideInHorizontally(BrowserMotion.expressiveSpring()) { it / 8 } +
-                fadeIn(BrowserMotion.expressiveSpring())) togetherWith
-                (slideOutHorizontally(BrowserMotion.snappySpring()) { -it / 10 } +
-                  fadeOut(BrowserMotion.snappySpring()))
+              val speed = designConfig.animationSpeedScale
+              (fadeIn(ExpressiveSprings.spatial(speed)) +
+                scaleIn(ExpressiveSprings.spatial(speed), initialScale = 0.94f)) togetherWith
+                (fadeOut(ExpressiveSprings.micro(speed)) +
+                  scaleOut(ExpressiveSprings.micro(speed), targetScale = 1.04f))
             },
             label = "SettingsDetailTransition",
             modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -335,66 +355,86 @@ fun SettingsHubOverlay(
           }
         }
       } else {
-        AnimatedContent(
-          targetState = isDetailOpenOnCover,
-          transitionSpec = {
-            if (targetState) {
-              (slideInHorizontally(BrowserMotion.expressiveSpring()) { it / 3 } +
-                fadeIn(BrowserMotion.expressiveSpring())) togetherWith
-                (slideOutHorizontally(BrowserMotion.snappySpring()) { -it / 4 } +
-                  fadeOut(BrowserMotion.snappySpring()))
-            } else {
-              (slideInHorizontally(BrowserMotion.expressiveSpring()) { -it / 3 } +
-                fadeIn(BrowserMotion.expressiveSpring())) togetherWith
-                (slideOutHorizontally(BrowserMotion.snappySpring()) { it / 4 } +
-                  fadeOut(BrowserMotion.snappySpring()))
+        var coverHostOrigin by remember { mutableStateOf(Offset.Zero) }
+        var coverHostSize by remember { mutableStateOf(IntSize.Zero) }
+        val diveP = coverDiveAnim.value.coerceIn(0f, 1f)
+
+        Box(
+          modifier =
+            Modifier.weight(1f)
+              .fillMaxWidth()
+              .onGloballyPositioned { coords ->
+                coverHostOrigin = coords.boundsInRoot().topLeft
+                coverHostSize = coords.size
+              },
+        ) {
+          if (diveP < 0.995f) {
+            if (diveP > 0.002f) {
+              Box(
+                modifier =
+                  Modifier.fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.88f * diveP))
+              )
             }
-          },
-          label = "CoverSettingsDrillTransition",
-          modifier = Modifier.weight(1f).fillMaxWidth(),
-        ) { detailOpen ->
-          if (!detailOpen) {
             SettingsMasterList(
               selectedPillar = selectedPillar,
               showSelectionHighlight = false,
               postureState = postureState,
               abiBackend = abiInfo.backendKind,
-              onSelectPillar = {
-                selectedPillar = it
+              onSelectPillar = { pillar, origin ->
+                selectedPillar = pillar
+                coverDetailOrigin = origin
                 isDetailOpenOnCover = true
               },
-              modifier = Modifier.fillMaxSize(),
+              modifier =
+                Modifier.fillMaxSize().spatialDiveBackground(
+                  progress = diveP,
+                  origin = coverDetailOrigin,
+                  hostSize = coverHostSize,
+                  hostTopLeftInRoot = coverHostOrigin,
+                ),
             )
-          } else {
-            SettingsDetailPane(
-              pillar = selectedPillar,
-              blockerStats = blockerStats,
-              settings = settings,
-              toolbarConfig = toolbarConfig,
-              designConfig = designConfig,
-              sitePermissions = sitePermissions,
-              activeTabDomain = activeTabDomain,
-              searchEngines = searchEngines,
-              dohProviders = dohProviders,
-              isProbingDoh = isProbingDoh,
-              lastDohLookup = lastDohLookup,
-              onUpdateSetting = onUpdateSetting,
-              onUpdateDesignParam = onUpdateDesignParam,
-              onResetDesignDefaults = onResetDesignDefaults,
-              onUpdateToolbarSlots = onUpdateToolbarSlots,
-              onMoveToolbarSlot = onMoveToolbarSlot,
-              onSelectAlignment = onSelectAlignment,
-              onToggleAutoMinimize = onToggleAutoMinimize,
-              onSetGestures = onSetGestures,
-              onResetToolbar = onResetToolbar,
-              onUpdateFilterList = onUpdateFilterList,
-              onClearBrowsingData = onClearBrowsingData,
-              onSetGlobalSitePolicy = onSetGlobalSitePolicy,
-              onSetDomainSiteOverride = onSetDomainSiteOverride,
-              onResetDomainOverrides = onResetDomainOverrides,
-              onRunDohProbe = onRunDohProbe,
-              modifier = Modifier.fillMaxSize(),
-            )
+            SpatialDiveScrim(progress = diveP)
+          }
+
+          if (diveP > 0.002f || isDetailOpenOnCover) {
+            SpatialDiveForegroundHost(
+              progress = diveP,
+              origin = coverDetailOrigin,
+              hostSize = coverHostSize,
+              hostTopLeftInRoot = coverHostOrigin,
+              surfaceColor = MaterialTheme.colorScheme.background,
+            ) {
+              SettingsDetailPane(
+                pillar = selectedPillar,
+                blockerStats = blockerStats,
+                settings = settings,
+                toolbarConfig = toolbarConfig,
+                designConfig = designConfig,
+                sitePermissions = sitePermissions,
+                activeTabDomain = activeTabDomain,
+                searchEngines = searchEngines,
+                dohProviders = dohProviders,
+                isProbingDoh = isProbingDoh,
+                lastDohLookup = lastDohLookup,
+                onUpdateSetting = onUpdateSetting,
+                onUpdateDesignParam = onUpdateDesignParam,
+                onResetDesignDefaults = onResetDesignDefaults,
+                onUpdateToolbarSlots = onUpdateToolbarSlots,
+                onMoveToolbarSlot = onMoveToolbarSlot,
+                onSelectAlignment = onSelectAlignment,
+                onToggleAutoMinimize = onToggleAutoMinimize,
+                onSetGestures = onSetGestures,
+                onResetToolbar = onResetToolbar,
+                onUpdateFilterList = onUpdateFilterList,
+                onClearBrowsingData = onClearBrowsingData,
+                onSetGlobalSitePolicy = onSetGlobalSitePolicy,
+                onSetDomainSiteOverride = onSetDomainSiteOverride,
+                onResetDomainOverrides = onResetDomainOverrides,
+                onRunDohProbe = onRunDohProbe,
+                modifier = Modifier.fillMaxSize(),
+              )
+            }
           }
         }
       }
@@ -408,23 +448,37 @@ private fun SettingsMasterList(
   showSelectionHighlight: Boolean,
   postureState: FoldablePostureState,
   abiBackend: String,
-  onSelectPillar: (SettingsPillar) -> Unit,
+  onSelectPillar: (SettingsPillar, SpatialDiveOrigin) -> Unit,
   modifier: Modifier = Modifier,
 ) {
   val design = LocalDesignConfig.current
+  val bottomInset =
+    WindowInsets.navigationBars.union(WindowInsets.ime).asPaddingValues().calculateBottomPadding()
   LazyColumn(
-    modifier = modifier.padding(BrowserSpacing.Grid2),
+    modifier = modifier,
+    contentPadding =
+      PaddingValues(
+        start = BrowserSpacing.Grid2,
+        end = BrowserSpacing.Grid2,
+        top = BrowserSpacing.Grid2,
+        bottom = BrowserSpacing.Grid2 + bottomInset,
+      ),
     verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
   ) {
     items(SettingsPillar.entries, key = { it.name }) { pillar ->
       val active = showSelectionHighlight && pillar == selectedPillar
+      var cardBounds by remember { mutableStateOf(Rect.Zero) }
       SpringPressSurface(
-        onClick = { onSelectPillar(pillar) },
+        onClick = {
+          onSelectPillar(pillar, SpatialDiveOrigin(cardBounds, design.cardCornerRadiusDp))
+        },
         selected = active,
         shape = design.cardOuterShape(),
         unselectedColor = MaterialTheme.colorScheme.surface,
         modifier =
-          Modifier.fillMaxWidth().testTag("settings_pillar_${pillar.name.lowercase()}"),
+          Modifier.fillMaxWidth()
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .testTag("settings_pillar_${pillar.name.lowercase()}"),
       ) {
         Row(
           modifier = Modifier.fillMaxWidth().padding(BrowserSpacing.Grid2),
@@ -522,9 +576,11 @@ private fun SettingsDetailPane(
   onRunDohProbe: (String) -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val bottomInset =
+    WindowInsets.navigationBars.union(WindowInsets.ime).asPaddingValues().calculateBottomPadding()
   LazyColumn(
     modifier = modifier.padding(horizontal = BrowserSpacing.Grid2),
-    contentPadding = PaddingValues(vertical = BrowserSpacing.Grid2),
+    contentPadding = PaddingValues(top = BrowserSpacing.Grid2, bottom = BrowserSpacing.Grid2 + bottomInset),
     verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid2),
   ) {
     when (pillar) {
@@ -734,6 +790,13 @@ private fun SettingsDetailPane(
               title = "당겨서 새로고침",
               checked = toolbarConfig.pullDownRefresh,
               onCheckedChange = { onSetGestures(toolbarConfig.swipeBarSwitchTabs, it) },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            SettingsIconSwitchRow(
+              icon = Icons.Outlined.Edit,
+              title = "주소 편집 시 바 확장 표시",
+              checked = settings.expandBarOnUrlEdit,
+              onCheckedChange = { onUpdateSetting("expandBarOnUrlEdit", it.toString()) },
             )
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
             Row(
@@ -1161,6 +1224,13 @@ private fun SettingsDetailPane(
               onCheckedChange = {
                 onSetGlobalSitePolicy("autoplayMedia", if (it) "ALLOW" else "BLOCK")
               },
+            )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            SettingsIconSwitchRow(
+              icon = Icons.Outlined.ZoomIn,
+              title = "사이트 강제 확대·축소",
+              checked = settings.forceZoomEnabled,
+              onCheckedChange = { onUpdateSetting("forceZoomEnabled", it.toString()) },
             )
           }
         }

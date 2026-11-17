@@ -5,15 +5,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
@@ -59,14 +60,20 @@ fun TabletopDeck(
   onOpenInspector: () -> Unit,
   modifier: Modifier = Modifier,
 ) {
+  val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
   Surface(
     color = MaterialTheme.colorScheme.surface,
-    modifier = modifier.fillMaxSize().navigationBarsPadding(),
+    modifier = modifier.fillMaxSize(),
   ) {
     Column(
       modifier =
         Modifier.fillMaxSize()
-          .padding(horizontal = BrowserSpacing.Grid2, vertical = BrowserSpacing.Grid1_5),
+          .padding(
+            start = BrowserSpacing.Grid2,
+            end = BrowserSpacing.Grid2,
+            top = BrowserSpacing.Grid1_5,
+            bottom = BrowserSpacing.Grid1_5 + navBottom,
+          ),
       verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
     ) {
       // 상단 덱: 모드 뱃지 + 주소창 + 설정
@@ -227,7 +234,7 @@ fun TabletopDeck(
         items(bookmarks.take(6), key = { it.url }) { bookmark ->
           SpringPressSurface(
             onClick = { onNavigateBookmark(bookmark.url) },
-            shape = CircleShape,
+            shape = BrowserRadii.CardInnerShape,
             unselectedColor = MaterialTheme.colorScheme.background,
           ) {
             Text(

@@ -40,6 +40,7 @@ data class WebViewNavCapabilities(
 data class WebRenderPolicy(
   val fontZoomPercent: Int = 100,
   val forceWebDark: Boolean = false,
+  val forceZoomEnabled: Boolean = false,
   val blockThirdPartyCookies: Boolean = true,
   val sendDntGpcHeaders: Boolean = true,
   val httpsOnlyMode: Boolean = true,
@@ -136,6 +137,7 @@ class AospWebViewPool(
           prev?.desktopSite != renderPolicy.desktopSite ||
             prev?.javascriptEnabled != renderPolicy.javascriptEnabled ||
             prev?.forceWebDark != renderPolicy.forceWebDark ||
+            prev?.forceZoomEnabled != renderPolicy.forceZoomEnabled ||
             prev?.blockImages != renderPolicy.blockImages
         applyRenderPolicy(existing, renderPolicy)
         appliedPolicies[tabId] = renderPolicy
@@ -164,6 +166,7 @@ class AospWebViewPool(
           domStorageEnabled = true
           loadWithOverviewMode = true
           useWideViewPort = true
+          setSupportZoom(true)
           builtInZoomControls = true
           displayZoomControls = false
           allowFileAccess = false
@@ -268,6 +271,12 @@ class AospWebViewPool(
               if (policy.forceWebDark && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
                 view?.evaluateJavascript(
                   "(function(){document.documentElement.style.filter='invert(0.92) hue-rotate(180deg)';})();",
+                  null,
+                )
+              }
+              if (policy.forceZoomEnabled) {
+                view?.evaluateJavascript(
+                  FORCE_ZOOM_VIEWPORT_SCRIPT,
                   null,
                 )
               }
@@ -389,6 +398,9 @@ class AospWebViewPool(
       javaScriptEnabled = policy.javascriptEnabled
       javaScriptCanOpenWindowsAutomatically = policy.popupsAllowed
       setSupportMultipleWindows(policy.popupsAllowed)
+      setSupportZoom(true)
+      builtInZoomControls = true
+      displayZoomControls = false
       loadsImagesAutomatically = !policy.blockImages
       blockNetworkImage = policy.blockImages
       textZoom = policy.fontZoomPercent.coerceIn(75, 200)
@@ -642,6 +654,19 @@ class AospWebViewPool(
 
   fun destroyAll() {
     webViews.keys.toList().forEach { destroyTab(it) }
+  }
+
+  companion object {
+    internal const val FORCE_ZOOM_VIEWPORT_SCRIPT =
+      "(function(){var metas=document.querySelectorAll('meta[name=\"viewport\"],meta[name=\"VIEWPORT\"]');" +
+        "if(metas.length===0){var m=document.createElement('meta');m.name='viewport';" +
+        "m.content='width=device-width,initial-scale=1.0,maximum-scale=5.0,user-scalable=yes';" +
+        "if(document.head){document.head.appendChild(m);}}" +
+        "else{for(var i=0;i<metas.length;i++){var c=metas[i].getAttribute('content')||'';" +
+        "var parts=c.split(',').map(function(p){return p.trim();}).filter(function(p){" +
+        "var k=p.split('=')[0].trim().toLowerCase();return k!=='user-scalable'&&k!=='maximum-scale';});" +
+        "parts.push('user-scalable=yes');parts.push('maximum-scale=5.0');" +
+        "metas[i].setAttribute('content',parts.join(', '));}}})();"
   }
 }
 

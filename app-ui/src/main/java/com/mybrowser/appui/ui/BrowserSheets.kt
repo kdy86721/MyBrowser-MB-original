@@ -7,12 +7,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -60,12 +64,18 @@ fun LibraryOverlay(
   val isCurrentBookmarked = focusedUrl != null && bookmarks.any { it.url == focusedUrl }
   val design = LocalDesignConfig.current
 
+  val navBottom =
+    WindowInsets.navigationBars.union(WindowInsets.ime).asPaddingValues().calculateBottomPadding()
+
   Surface(
-    color = MaterialTheme.colorScheme.background.copy(alpha = 0.98f),
-    modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    color = MaterialTheme.colorScheme.background,
+    modifier = Modifier.fillMaxSize(),
   ) {
     Column(
-      modifier = Modifier.fillMaxSize().padding(BrowserSpacing.Grid2),
+      modifier =
+        Modifier.fillMaxSize()
+          .statusBarsPadding()
+          .padding(start = BrowserSpacing.Grid2, end = BrowserSpacing.Grid2, top = BrowserSpacing.Grid2),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Column(
@@ -125,7 +135,10 @@ fun LibraryOverlay(
               )
             }
           } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1)) {
+            LazyColumn(
+              verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+              contentPadding = PaddingValues(bottom = BrowserSpacing.Grid2 + navBottom),
+            ) {
               items(bookmarks, key = { it.url }) { b ->
                 LibraryEntryCard(
                   title = b.title,
@@ -152,7 +165,10 @@ fun LibraryOverlay(
               )
             }
           } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1)) {
+            LazyColumn(
+              verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+              contentPadding = PaddingValues(bottom = BrowserSpacing.Grid2 + navBottom),
+            ) {
               items(history, key = { it.url }) { h ->
                 LibraryEntryCard(
                   title = h.title,
@@ -236,14 +252,17 @@ fun ReaderModeOverlay(
   BackHandler(onBack = onDismiss)
   val design = LocalDesignConfig.current
 
+  val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
   Surface(
     color = MaterialTheme.colorScheme.background,
-    modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    modifier = Modifier.fillMaxSize(),
   ) {
     Column(
       modifier =
         Modifier.fillMaxSize()
-          .padding(horizontal = BrowserSpacing.Grid3, vertical = BrowserSpacing.Grid1_5),
+          .statusBarsPadding()
+          .padding(start = BrowserSpacing.Grid3, end = BrowserSpacing.Grid3, top = BrowserSpacing.Grid1_5),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Row(
@@ -269,7 +288,11 @@ fun ReaderModeOverlay(
 
       LazyColumn(
         modifier = Modifier.widthIn(max = 680.dp).weight(1f).fillMaxWidth(),
-        contentPadding = PaddingValues(vertical = BrowserSpacing.Grid2),
+        contentPadding =
+          PaddingValues(
+            top = BrowserSpacing.Grid2,
+            bottom = BrowserSpacing.Grid2 + navBottom,
+          ),
         verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid2),
       ) {
         item(key = "reader_title") {

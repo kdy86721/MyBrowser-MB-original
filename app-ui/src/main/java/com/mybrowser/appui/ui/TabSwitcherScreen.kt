@@ -3,6 +3,10 @@ package com.mybrowser.appui.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -145,7 +149,7 @@ fun TabSwitcherOverlay(
   secondaryTabId: String?,
   splitMode: Boolean,
   postureState: FoldablePostureState,
-  onSelectTab: (tabId: String, targetPane: Int) -> Unit,
+  onSelectTab: (tabId: String, targetPane: Int, origin: SpatialDiveOrigin) -> Unit,
   onCloseTab: (String) -> Unit,
   onUndoCloseTab: () -> Unit,
   onCreateTab: () -> Unit,
@@ -171,6 +175,7 @@ fun TabSwitcherOverlay(
   val actionBarReveal = ((p - 0.25f) / 0.50f).coerceIn(0f, 1f)
 
   val design = LocalDesignConfig.current
+  val speedScale = LocalAnimationSpeedScale.current
   val haptic = LocalHapticFeedback.current
   val density = LocalDensity.current
 
@@ -359,11 +364,7 @@ fun TabSwitcherOverlay(
 
   Surface(
     color = MaterialTheme.colorScheme.background.copy(alpha = (p * 0.96f).coerceIn(0f, 0.96f)),
-    modifier =
-      Modifier.fillMaxSize()
-        .statusBarsPadding()
-        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
-        .then(multiTouchCollapseModifier),
+    modifier = Modifier.fillMaxSize().then(multiTouchCollapseModifier),
   ) {
     Box(
       modifier =
@@ -372,7 +373,14 @@ fun TabSwitcherOverlay(
         }
     ) {
       Column(
-        modifier = Modifier.fillMaxSize().padding(BrowserSpacing.Grid2),
+        modifier =
+          Modifier.fillMaxSize()
+            .statusBarsPadding()
+            .padding(
+              start = BrowserSpacing.Grid2,
+              end = BrowserSpacing.Grid2,
+              top = BrowserSpacing.Grid2,
+            ),
         horizontalAlignment = Alignment.CenterHorizontally,
       ) {
         Column(
@@ -566,7 +574,13 @@ fun TabSwitcherOverlay(
               ) { rowIdx ->
                 val rowTabs = pinnedRows[rowIdx]
                 Row(
-                  modifier = Modifier.fillMaxWidth().animateItem(),
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .animateItem(
+                        fadeInSpec = ExpressiveSprings.spatial(speedScale),
+                        placementSpec = ExpressiveSprings.spatial(speedScale),
+                        fadeOutSpec = ExpressiveSprings.micro(speedScale),
+                      ),
                   horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
                 ) {
                   rowTabs.forEach { tab ->
@@ -627,7 +641,7 @@ fun TabSwitcherOverlay(
                               }
                             }
                           },
-                          onSelectTab = { pane -> onSelectTab(tab.id, pane) },
+                          onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
                           onTogglePin = { onTogglePinTab(tab.id) },
                           onCloseTab = { onCloseTab(tab.id) },
                         )
@@ -668,7 +682,11 @@ fun TabSwitcherOverlay(
                     ),
                   modifier =
                     Modifier.fillMaxWidth()
-                      .animateItem()
+                      .animateItem(
+                        fadeInSpec = ExpressiveSprings.spatial(speedScale),
+                        placementSpec = ExpressiveSprings.spatial(speedScale),
+                        fadeOutSpec = ExpressiveSprings.micro(speedScale),
+                      )
                       .graphicsLayer {
                         alpha = neighborReveal
                         scaleX = neighborScale
@@ -714,7 +732,7 @@ fun TabSwitcherOverlay(
                         modifier = Modifier.weight(1f),
                       )
                       Surface(
-                        shape = CircleShape,
+                        shape = design.cardInnerShape(),
                         color = folderColor.copy(alpha = 0.16f),
                       ) {
                         Text(
@@ -742,7 +760,15 @@ fun TabSwitcherOverlay(
                       )
                     }
 
-                    AnimatedVisibility(visible = folder.isExpanded) {
+                    AnimatedVisibility(
+                      visible = folder.isExpanded,
+                      enter =
+                        fadeIn(ExpressiveSprings.micro(speedScale)) +
+                          expandVertically(ExpressiveSprings.spatial(speedScale)),
+                      exit =
+                        fadeOut(ExpressiveSprings.micro(speedScale)) +
+                          shrinkVertically(ExpressiveSprings.spatial(speedScale)),
+                    ) {
                       val rows = folderTabs.chunked(gridCols)
                       Column(verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1)) {
                         rows.forEach { rowTabs ->
@@ -807,7 +833,7 @@ fun TabSwitcherOverlay(
                                         }
                                       }
                                     },
-                                    onSelectTab = { pane -> onSelectTab(tab.id, pane) },
+                                    onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
                                     onTogglePin = { onTogglePinTab(tab.id) },
                                     onCloseTab = { onCloseTab(tab.id) },
                                   )
@@ -884,7 +910,13 @@ fun TabSwitcherOverlay(
                   ) { rowIdx ->
                     val rowTabs = groupRows[rowIdx]
                     Row(
-                      modifier = Modifier.fillMaxWidth().animateItem(),
+                      modifier =
+                        Modifier.fillMaxWidth()
+                          .animateItem(
+                            fadeInSpec = ExpressiveSprings.spatial(speedScale),
+                            placementSpec = ExpressiveSprings.spatial(speedScale),
+                            fadeOutSpec = ExpressiveSprings.micro(speedScale),
+                          ),
                       horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
                     ) {
                       rowTabs.forEach { tab ->
@@ -946,7 +978,7 @@ fun TabSwitcherOverlay(
                                   }
                                 }
                               },
-                              onSelectTab = { pane -> onSelectTab(tab.id, pane) },
+                              onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
                               onTogglePin = { onTogglePinTab(tab.id) },
                               onCloseTab = { onCloseTab(tab.id) },
                             )
@@ -964,7 +996,13 @@ fun TabSwitcherOverlay(
                 ) { rowIndex ->
                   val rowTabs = ungroupedRows[rowIndex]
                   Row(
-                    modifier = Modifier.fillMaxWidth().animateItem(),
+                    modifier =
+                      Modifier.fillMaxWidth()
+                        .animateItem(
+                          fadeInSpec = ExpressiveSprings.spatial(speedScale),
+                          placementSpec = ExpressiveSprings.spatial(speedScale),
+                          fadeOutSpec = ExpressiveSprings.micro(speedScale),
+                        ),
                     horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
                   ) {
                     rowTabs.forEach { tab ->
@@ -1026,7 +1064,7 @@ fun TabSwitcherOverlay(
                                 }
                               }
                             },
-                            onSelectTab = { pane -> onSelectTab(tab.id, pane) },
+                            onSelectTab = { pane, origin -> onSelectTab(tab.id, pane, origin) },
                             onTogglePin = { onTogglePinTab(tab.id) },
                             onCloseTab = { onCloseTab(tab.id) },
                           )
@@ -1070,21 +1108,27 @@ fun TabSwitcherOverlay(
 
           // 하단 통합 액션 바: 외곽 barOuterShape(), 내부 버튼 모두 barInnerShape() ((barCornerRadiusDp - 4f).dp)
           val barInnerButtonShape = design.barInnerShape()
-          FrostedFloatingSurface(
-            shape = design.barOuterShape(),
-            opacity = (design.barOpacity + 0.06f).coerceIn(0.86f, 0.98f),
-            blurRadiusDp = design.barBlurRadiusDp,
-            isFocused = true,
+          Box(
             modifier =
               Modifier.fillMaxWidth()
-                .graphicsLayer {
-                  alpha = actionBarReveal
-                  translationY = (1f - actionBarReveal) * 28.dp.toPx()
-                  val s = 0.94f + 0.06f * actionBarReveal
-                  scaleX = s
-                  scaleY = s
-                },
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+                .padding(bottom = BrowserSpacing.Grid2)
           ) {
+            FrostedFloatingSurface(
+              shape = design.barOuterShape(),
+              opacity = (design.barOpacity + 0.06f).coerceIn(0.86f, 0.98f),
+              blurRadiusDp = design.barBlurRadiusDp,
+              isFocused = true,
+              modifier =
+                Modifier.fillMaxWidth()
+                  .graphicsLayer {
+                    alpha = actionBarReveal
+                    translationY = (1f - actionBarReveal) * 28.dp.toPx()
+                    val s = 0.94f + 0.06f * actionBarReveal
+                    scaleX = s
+                    scaleY = s
+                  },
+            ) {
             Row(
               modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
               verticalAlignment = Alignment.CenterVertically,
@@ -1124,6 +1168,7 @@ fun TabSwitcherOverlay(
                 Text("닫기", style = MaterialTheme.typography.labelMedium)
               }
             }
+          }
           }
         }
       }
@@ -1455,11 +1500,12 @@ private fun TabSwitcherCard(
   onStartDrag: (Offset) -> Unit,
   onDragDelta: (Offset) -> Unit,
   onEndDrag: () -> Unit,
-  onSelectTab: (Int) -> Unit,
+  onSelectTab: (Int, SpatialDiveOrigin) -> Unit,
   onTogglePin: () -> Unit,
   onCloseTab: () -> Unit,
 ) {
   val design = LocalDesignConfig.current
+  val speedScale = LocalAnimationSpeedScale.current
   val isActive = isPrimary || isSecondary
   var selfRect by remember { mutableStateOf(Rect.Zero) }
   val heroSettleScale =
@@ -1468,7 +1514,7 @@ private fun TabSwitcherCard(
     }
   LaunchedEffect(tab.id, isHeroArrival) {
     if (isHeroArrival) {
-      heroSettleScale.animateTo(1f, BrowserMotion.morphingPillSpring())
+      heroSettleScale.animateTo(1f, BrowserMotion.morphingPillSpring(speedScale))
     }
   }
 
@@ -1491,7 +1537,7 @@ private fun TabSwitcherCard(
   LaunchedEffect(dismissState.currentValue) {
     if (dismissState.currentValue != SwipeToDismissBoxValue.Settled) {
       delay(280L)
-      dismissState.snapTo(SwipeToDismissBoxValue.Settled)
+      dismissState.reset()
     }
   }
 
@@ -1517,7 +1563,7 @@ private fun TabSwitcherCard(
 
   val cardContent: @Composable () -> Unit = {
     SpringPressSurface(
-      onClick = { onSelectTab(0) },
+      onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
       selected = isActive || isHoverMergeTarget || tab.isPinned,
       shape = design.cardOuterShape(),
       unselectedColor = MaterialTheme.colorScheme.surface,
@@ -1679,7 +1725,7 @@ private fun TabSwitcherCard(
                 if (splitMode) {
                   Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     Surface(
-                      onClick = { onSelectTab(0) },
+                      onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
                       shape = design.cardInnerShape(),
                       color = MaterialTheme.colorScheme.primaryContainer,
                     ) {
@@ -1691,7 +1737,7 @@ private fun TabSwitcherCard(
                       )
                     }
                     Surface(
-                      onClick = { onSelectTab(1) },
+                      onClick = { onSelectTab(1, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) },
                       shape = design.cardInnerShape(),
                       color = MaterialTheme.colorScheme.secondaryContainer,
                     ) {
@@ -1756,8 +1802,12 @@ private fun TabSwitcherCard(
             }
             if (splitMode) {
               Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = { onSelectTab(0) }) { Text("왼쪽") }
-                TextButton(onClick = { onSelectTab(1) }) { Text("오른쪽") }
+                TextButton(
+                  onClick = { onSelectTab(0, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) }
+                ) { Text("왼쪽") }
+                TextButton(
+                  onClick = { onSelectTab(1, SpatialDiveOrigin(selfRect, design.cardCornerRadiusDp)) }
+                ) { Text("오른쪽") }
               }
             }
             SpringIconButton(

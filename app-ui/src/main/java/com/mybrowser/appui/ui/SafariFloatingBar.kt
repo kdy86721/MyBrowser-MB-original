@@ -3,8 +3,7 @@ package com.mybrowser.appui.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -22,7 +21,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -37,10 +38,11 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.ArrowForward
@@ -52,6 +54,8 @@ import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.ChromeReaderMode
 import androidx.compose.material.icons.outlined.Clear
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.FindInPage
 import androidx.compose.material.icons.outlined.FullscreenExit
@@ -70,7 +74,6 @@ import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -89,12 +92,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -102,6 +109,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -160,6 +168,7 @@ fun SafariFloatingBar(
   toolbarConfig: ToolbarConfigUi,
   designConfig: DesignUiConfig = LocalDesignConfig.current,
   floatingBarStyle: FloatingBarStyle = FloatingBarStyle.TRANSLUCENT_GLASS,
+  expandBarOnUrlEdit: Boolean = true,
   splitGestureEnabled: Boolean = true,
   splitGestureSensitivity: SplitGestureSensitivity = SplitGestureSensitivity.MEDIUM,
   swipeUpOpenTabs: Boolean = true,
@@ -173,6 +182,10 @@ fun SafariFloatingBar(
     if (completed) onSwipeUpOpenTabs()
   },
   onSwipeTabDelta: (Int) -> Unit = {},
+  onHorizontalTabDrag: (dragDxPx: Float) -> Unit = {},
+  onHorizontalTabDragEnd: (dragDxPx: Float, velocityXPxPerSec: Float) -> Unit = { dx, _ ->
+    if (abs(dx) > 52f) onSwipeTabDelta(if (dx > 0f) -1 else 1)
+  },
   onTriggerSplitGesture: (directionRight: Boolean) -> Unit = {},
   onCloseSplitPane: () -> Unit = {},
   onFocusOmnibox: () -> Unit,
@@ -182,7 +195,7 @@ fun SafariFloatingBar(
   onSelectSearchEngine: (String) -> Unit,
   onReloadOrStop: () -> Unit,
   onExecuteAction: (ToolbarActionId) -> Unit,
-  onOpenSettings: () -> Unit,
+  onOpenSettings: (SpatialDiveOrigin) -> Unit,
   onFindQueryChange: (String) -> Unit,
   onFindNext: (Boolean) -> Unit,
   onCloseFindInPage: () -> Unit,
@@ -225,16 +238,17 @@ fun SafariFloatingBar(
     }
   }
 
+  val speedScale = designConfig.animationSpeedScale
   val shouldShowCollapsed by remember(isCollapsed, isOmniboxFocused) {
     derivedStateOf { isCollapsed && !isOmniboxFocused }
   }
   val pillProgress = remember { Animatable(if (shouldShowCollapsed) 1f else 0f) }
   var isRestoringPill by remember { mutableStateOf(false) }
-  LaunchedEffect(shouldShowCollapsed) {
+  LaunchedEffect(shouldShowCollapsed, speedScale) {
     isRestoringPill = !shouldShowCollapsed
     pillProgress.animateTo(
       targetValue = if (shouldShowCollapsed) 1f else 0f,
-      animationSpec = BrowserMotion.morphingPillSpring(),
+      animationSpec = BrowserMotion.morphingPillSpring(speedScale),
     )
   }
 
@@ -266,11 +280,11 @@ fun SafariFloatingBar(
     AnimatedVisibility(
       visible = isSplitArmed && supportsDualPane && splitGestureEnabled,
       enter =
-        fadeIn(BrowserMotion.expressiveSpring()) +
-          scaleIn(BrowserMotion.expressiveSpring(), initialScale = 0.90f),
+        fadeIn(BrowserMotion.expressiveSpring(speedScale)) +
+          scaleIn(BrowserMotion.expressiveSpring(speedScale), initialScale = 0.90f),
       exit =
-        fadeOut(BrowserMotion.snappySpring()) +
-          scaleOut(BrowserMotion.snappySpring(), targetScale = 0.90f),
+        fadeOut(BrowserMotion.snappySpring(speedScale)) +
+          scaleOut(BrowserMotion.snappySpring(speedScale), targetScale = 0.90f),
     ) {
       SplitGesturePreviewHud(
         direction = splitDirection,
@@ -288,11 +302,11 @@ fun SafariFloatingBar(
     AnimatedVisibility(
       visible = isOmniboxFocused,
       enter =
-        fadeIn(BrowserMotion.expressiveSpring()) +
-          slideInVertically(BrowserMotion.expressiveSpring()) { it / 5 },
+        fadeIn(BrowserMotion.expressiveSpring(speedScale)) +
+          slideInVertically(BrowserMotion.expressiveSpring(speedScale)) { it / 5 },
       exit =
-        fadeOut(BrowserMotion.snappySpring()) +
-          slideOutVertically(BrowserMotion.snappySpring()) { it / 5 },
+        fadeOut(BrowserMotion.snappySpring(speedScale)) +
+          slideOutVertically(BrowserMotion.snappySpring(speedScale)) { it / 5 },
     ) {
       FrostedFloatingSurface(
         shape = designConfig.cardOuterShape(),
@@ -375,11 +389,11 @@ fun SafariFloatingBar(
     AnimatedVisibility(
       visible = isFindInPageVisible && !isOmniboxFocused,
       enter =
-        fadeIn(BrowserMotion.expressiveSpring()) +
-          scaleIn(BrowserMotion.expressiveSpring(), initialScale = 0.94f),
+        fadeIn(BrowserMotion.expressiveSpring(speedScale)) +
+          scaleIn(BrowserMotion.expressiveSpring(speedScale), initialScale = 0.94f),
       exit =
-        fadeOut(BrowserMotion.snappySpring()) +
-          scaleOut(BrowserMotion.snappySpring(), targetScale = 0.94f),
+        fadeOut(BrowserMotion.snappySpring(speedScale)) +
+          scaleOut(BrowserMotion.snappySpring(speedScale), targetScale = 0.94f),
     ) {
       FindInPageFloatingPill(
         query = findQuery,
@@ -415,6 +429,7 @@ fun SafariFloatingBar(
       toolbarConfig = toolbarConfig,
       designConfig = designConfig,
       floatingBarStyle = floatingBarStyle,
+      expandBarOnUrlEdit = expandBarOnUrlEdit,
       swipeEnabled = toolbarConfig.swipeBarSwitchTabs,
       swipeUpOpenTabs = swipeUpOpenTabs,
       splitGestureEnabled = splitGestureEnabled,
@@ -428,7 +443,8 @@ fun SafariFloatingBar(
       },
       onTriggerSplitGesture = onTriggerSplitGesture,
       onCloseSplitPane = onCloseSplitPane,
-      onSwipeTabDelta = onSwipeTabDelta,
+      onHorizontalTabDrag = onHorizontalTabDrag,
+      onHorizontalTabDragEnd = onHorizontalTabDragEnd,
       onSwipeUpDragProgress = onSwipeUpDragProgress,
       onSwipeUpDragEnd = onSwipeUpDragEnd,
       onExpandBar = onExpandBar,
@@ -598,6 +614,7 @@ private fun MorphingFloatingPill(
   toolbarConfig: ToolbarConfigUi,
   designConfig: DesignUiConfig,
   floatingBarStyle: FloatingBarStyle,
+  expandBarOnUrlEdit: Boolean,
   swipeEnabled: Boolean,
   swipeUpOpenTabs: Boolean,
   splitGestureEnabled: Boolean,
@@ -608,7 +625,8 @@ private fun MorphingFloatingPill(
   onSplitArmChanged: (Boolean, Float) -> Unit,
   onTriggerSplitGesture: (Boolean) -> Unit,
   onCloseSplitPane: () -> Unit,
-  onSwipeTabDelta: (Int) -> Unit,
+  onHorizontalTabDrag: (Float) -> Unit,
+  onHorizontalTabDragEnd: (Float, Float) -> Unit,
   onSwipeUpDragProgress: (Float) -> Unit,
   onSwipeUpDragEnd: (completed: Boolean, velocityYPxPerSec: Float) -> Unit,
   onExpandBar: () -> Unit,
@@ -619,8 +637,9 @@ private fun MorphingFloatingPill(
   onOmniboxSubmit: (String) -> Unit,
   onReloadOrStop: () -> Unit,
   onExecuteAction: (ToolbarActionId) -> Unit,
-  onOpenSettings: () -> Unit,
+  onOpenSettings: (SpatialDiveOrigin) -> Unit,
 ) {
+  val speedScale = designConfig.animationSpeedScale
   val focusRequester = remember { FocusRequester() }
   LaunchedEffect(isOmniboxFocused) {
     if (isOmniboxFocused) {
@@ -629,27 +648,38 @@ private fun MorphingFloatingPill(
   }
 
   val omniboxFocusAnim = remember { Animatable(if (isOmniboxFocused) 1f else 0f) }
-  LaunchedEffect(isOmniboxFocused) {
+  LaunchedEffect(isOmniboxFocused, expandBarOnUrlEdit, speedScale) {
     omniboxFocusAnim.animateTo(
       targetValue = if (isOmniboxFocused) 1f else 0f,
-      animationSpec = BrowserMotion.morphingPillSpring(),
+      animationSpec =
+        if (expandBarOnUrlEdit) ExpressiveSprings.spatial(speedScale)
+        else ExpressiveSprings.micro(speedScale),
     )
   }
 
   val haptic = LocalHapticFeedback.current
   var isHoldingIdle by remember { mutableStateOf(false) }
-  val holdProgressAnim = remember { Animatable(0f) }
+  var holdProgressTarget by remember { mutableFloatStateOf(0f) }
+  val holdProgress by
+    animateFloatAsState(
+      targetValue = holdProgressTarget,
+      animationSpec = ExpressiveSprings.micro(speedScale),
+      label = "HoldSplitProgress",
+    )
 
   LaunchedEffect(isHoldingIdle) {
     if (isHoldingIdle) {
-      holdProgressAnim.snapTo(0f)
+      holdProgressTarget = 0f
       delay(180L)
-      holdProgressAnim.animateTo(
-        targetValue = 1f,
-        animationSpec = tween(durationMillis = 820, easing = LinearEasing),
-      )
+      val stepCount = 41
+      val stepMs = 820L / stepCount
+      for (i in 1..stepCount) {
+        if (!isHoldingIdle) break
+        holdProgressTarget = i / stepCount.toFloat()
+        delay(stepMs)
+      }
     } else {
-      holdProgressAnim.snapTo(0f)
+      holdProgressTarget = 0f
     }
   }
 
@@ -667,22 +697,38 @@ private fun MorphingFloatingPill(
     }
 
   val barHeight = designConfig.barHeightDp.coerceIn(44f, 68f)
-  val animatedHeight = androidx.compose.ui.unit.lerp(barHeight.dp, 36.dp, pillProgress)
-  val animatedCorner =
+  val omniboxFocus = omniboxFocusAnim.value.coerceIn(0f, 1f)
+  val expandedEditBarDp = if (expandBarOnUrlEdit) 96f else barHeight
+  val activeExpandedBarHeight =
+    androidx.compose.ui.unit.lerp(barHeight.dp, expandedEditBarDp.dp, omniboxFocus)
+  val animatedHeight =
+    androidx.compose.ui.unit.lerp(activeExpandedBarHeight, 36.dp, pillProgress)
+
+  val targetEditCornerDp =
+    if (expandBarOnUrlEdit) designConfig.cardCornerRadiusDp.coerceIn(14f, 26f)
+    else designConfig.barCornerRadiusDp.coerceIn(0f, 36f)
+  val activeExpandedCorner =
     androidx.compose.ui.unit.lerp(
       designConfig.barCornerRadiusDp.coerceIn(0f, 36f).dp,
+      targetEditCornerDp.dp,
+      omniboxFocus,
+    )
+  val animatedCorner =
+    androidx.compose.ui.unit.lerp(
+      activeExpandedCorner,
       18.dp, // 50% of 36.dp compact pill height
       pillProgress,
     )
   val outerShape = androidx.compose.foundation.shape.RoundedCornerShape(animatedCorner)
   val innerShape = designConfig.barInnerShape()
 
-  val omniboxFocus = omniboxFocusAnim.value.coerceIn(0f, 1f)
+  val targetEditOmniboxDp =
+    if (expandBarOnUrlEdit) 84f else (barHeight - 8f).coerceIn(34f, 60f)
   val omniboxHeight =
     androidx.compose.ui.unit.lerp(
       androidx.compose.ui.unit.lerp(
         (barHeight - 12f).coerceIn(32f, 56f).dp,
-        (barHeight - 8f).coerceIn(34f, 60f).dp,
+        targetEditOmniboxDp.dp,
         omniboxFocus,
       ),
       30.dp,
@@ -693,7 +739,8 @@ private fun MorphingFloatingPill(
   val isOmniboxGestureDisabled = isOmniboxFocused || isCollapsed || pillProgress > 0.3f
 
   val currentOnFocusOmnibox by rememberUpdatedState(onFocusOmnibox)
-  val currentOnSwipeTabDelta by rememberUpdatedState(onSwipeTabDelta)
+  val currentOnHorizontalTabDrag by rememberUpdatedState(onHorizontalTabDrag)
+  val currentOnHorizontalTabDragEnd by rememberUpdatedState(onHorizontalTabDragEnd)
   val currentOnSwipeUpDragProgress by rememberUpdatedState(onSwipeUpDragProgress)
   val currentOnSwipeUpDragEnd by rememberUpdatedState(onSwipeUpDragEnd)
   val currentOnCollapseBar by rememberUpdatedState(onCollapseBar)
@@ -800,42 +847,59 @@ private fun MorphingFloatingPill(
 
               if (movedEarly) {
                 var trackingHeroFly = false
+                var trackingCarousel = false
                 var latestHeroProgress = 0f
+                var latestDx = 0f
                 var quickActionDone = false
                 val heroMaxPx = 180.dp.toPx().coerceAtLeast(140f)
 
-                fun handleMove(dx: Float, dy: Float) {
-                  if (quickActionDone) return
-                  if (!trackingHeroFly && abs(dx) > abs(dy) * 1.15f && swipeEnabled && tabCount > 1 && abs(dx) > 52f) {
-                    quickActionDone = true
-                    currentOnSwipeTabDelta(if (dx > 0f) -1 else 1)
-                  } else if (dy < -touchSlop && (trackingHeroFly || abs(dy) >= abs(dx)) && swipeUpOpenTabs) {
-                    trackingHeroFly = true
-                    latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
-                    currentOnSwipeUpDragProgress(latestHeroProgress)
-                  } else if (!trackingHeroFly && dy > 44f && abs(dy) > abs(dx)) {
-                    quickActionDone = true
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    currentOnCollapseBar()
+                try {
+                  fun handleMove(dx: Float, dy: Float) {
+                    if (quickActionDone) return
+                    if (trackingCarousel) {
+                      latestDx = dx
+                      currentOnHorizontalTabDrag(dx)
+                    } else if (!trackingHeroFly && abs(dx) > abs(dy) * 1.15f && swipeEnabled && tabCount > 1 && abs(dx) > touchSlop) {
+                      trackingCarousel = true
+                      latestDx = dx
+                      currentOnHorizontalTabDrag(dx)
+                    } else if (dy < -touchSlop && (trackingHeroFly || abs(dy) >= abs(dx)) && swipeUpOpenTabs) {
+                      trackingHeroFly = true
+                      latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
+                      currentOnSwipeUpDragProgress(latestHeroProgress)
+                    } else if (!trackingHeroFly && dy > 44f && abs(dy) > abs(dx)) {
+                      quickActionDone = true
+                      haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                      currentOnCollapseBar()
+                    }
                   }
-                }
 
-                handleMove(earlyDragX, earlyDragY)
-                while (true) {
-                  val ev = awaitPointerEvent()
-                  val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
-                  if (ch == null || !ch.pressed) break
-                  velocityTracker.addPosition(ch.uptimeMillis, ch.position)
-                  handleMove(ch.position.x - downPos.x, ch.position.y - downPos.y)
-                  ch.consume()
-                }
-                if (trackingHeroFly) {
-                  val velY = velocityTracker.calculateVelocity().y
-                  val completed = latestHeroProgress >= 0.34f || velY < -750f
-                  if (completed) {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                  handleMove(earlyDragX, earlyDragY)
+                  while (true) {
+                    val ev = awaitPointerEvent()
+                    val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
+                    if (ch == null || !ch.pressed) break
+                    velocityTracker.addPosition(ch.uptimeMillis, ch.position)
+                    handleMove(ch.position.x - downPos.x, ch.position.y - downPos.y)
+                    ch.consume()
                   }
-                  currentOnSwipeUpDragEnd(completed, velY)
+                  if (trackingCarousel) {
+                    val velX = velocityTracker.calculateVelocity().x
+                    trackingCarousel = false
+                    currentOnHorizontalTabDragEnd(latestDx, velX)
+                  } else if (trackingHeroFly) {
+                    val velY = velocityTracker.calculateVelocity().y
+                    val completed = latestHeroProgress >= 0.34f || velY < -750f
+                    if (completed) {
+                      haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                    trackingHeroFly = false
+                    currentOnSwipeUpDragEnd(completed, velY)
+                  }
+                } catch (t: Throwable) {
+                  if (trackingCarousel) currentOnHorizontalTabDragEnd(0f, 0f)
+                  if (trackingHeroFly) currentOnSwipeUpDragEnd(false, 0f)
+                  throw t
                 }
                 return@awaitEachGesture
               }
@@ -992,6 +1056,12 @@ private fun MorphingFloatingPill(
     val collapsedPressScale = rememberPressScale(collapsedInteraction, 0.94f)
     val barDissolve = (heroDragLiftProgress / 0.45f).coerceIn(0f, 1f)
 
+    val loadingProgressFraction = (focusedTab?.progress ?: 0) / 100f
+    val isWebLoading =
+      focusedTab?.isLoading == true &&
+        focusedTab.url != "about:mb" &&
+        focusedTab.url != "about:blank"
+
     FrostedFloatingSurface(
       shape = outerShape,
       opacity = surfaceAlpha,
@@ -1012,6 +1082,13 @@ private fun MorphingFloatingPill(
               scaleY = dragScale
             }
           }
+          .floatingBarPerimeterProgress(
+            isActive = isWebLoading,
+            progressFraction = loadingProgressFraction,
+            cornerRadiusDp = animatedCorner,
+            accentColor = MaterialTheme.colorScheme.primary,
+            strokeWidthDp = 2.5.dp,
+          )
           .then(
             if (pillProgress > 0.5f) {
               Modifier.clickable(
@@ -1026,32 +1103,6 @@ private fun MorphingFloatingPill(
           .testTag(pillTestTag),
     ) {
       Box(modifier = Modifier.fillMaxSize()) {
-        if (focusedTab?.isLoading == true && pillProgress < 0.5f) {
-          LinearProgressIndicator(
-            progress = { (focusedTab.progress / 100f).coerceIn(0.05f, 1f) },
-            modifier =
-              Modifier.align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(2.dp)
-                .padding(horizontal = BrowserSpacing.Grid2),
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-          )
-        }
-
-        // 1초 길게 누르기 진행 바 (분할 제스처 대기 표시)
-        if (holdProgressAnim.value > 0.02f) {
-          LinearProgressIndicator(
-            progress = { holdProgressAnim.value },
-            modifier =
-              Modifier.align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .height(2.5.dp)
-                .padding(horizontal = BrowserSpacing.Grid2),
-            color = MaterialTheme.colorScheme.tertiary,
-            trackColor = MaterialTheme.colorScheme.surfaceVariant,
-          )
-        }
 
         // 단일 Row 내부에서 좌/우 슬롯이 중앙 캡슐 아래(zIndex 1f)로 수축·복원
         Row(
@@ -1119,110 +1170,239 @@ private fun MorphingFloatingPill(
               val expandedCapAlpha = if (floatingBarStyle == FloatingBarStyle.TRANSLUCENT_GLASS) 0.58f else 0.86f
               expandedCapAlpha * (1f - pillProgress)
             }
-          val omniboxShape =
-            androidx.compose.foundation.shape.RoundedCornerShape(
-              androidx.compose.ui.unit.lerp(
-                (designConfig.barCornerRadiusDp - 4f).coerceIn(0f, 36f).dp,
-                15.dp,
-                pillProgress,
-              )
+          val omniboxCornerDp =
+            androidx.compose.ui.unit.lerp(
+              (designConfig.barCornerRadiusDp - 4f).coerceIn(0f, 36f).dp,
+              15.dp,
+              pillProgress,
             )
+          val omniboxShape =
+            androidx.compose.foundation.shape.RoundedCornerShape(omniboxCornerDp)
           Surface(
             shape = omniboxShape,
             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = capsuleAlpha.coerceIn(0f, 1f)),
-            border =
-              if (holdProgressAnim.value > 0.05f) {
-                androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-              } else {
-                null
-              },
             modifier =
               Modifier.weight(1f)
                 .zIndex(2f)
                 .height(omniboxHeight)
                 .testTag(if (isSplitCompact) "omnibox_trigger_$paneIndex" else "omnibox_trigger")
                 .clip(omniboxShape)
+                .floatingBarPerimeterProgress(
+                  isActive = holdProgress > 0.02f,
+                  progressFraction = holdProgress,
+                  cornerRadiusDp = omniboxCornerDp,
+                  accentColor = MaterialTheme.colorScheme.tertiary,
+                  strokeWidthDp = 2.dp,
+                )
                 .then(omniboxGestureModifier),
           ) {
               if (isOmniboxFocused) {
-                Row(
-                  modifier = Modifier.fillMaxSize().padding(horizontal = BrowserSpacing.Grid1_5),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
-                ) {
-                  Icon(
-                    imageVector = Icons.Outlined.Search,
-                    contentDescription = "검색",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(18.dp),
-                  )
-                  BasicTextField(
-                    value = omniboxQuery,
-                    onValueChange = onOmniboxQueryChange,
-                    singleLine = true,
-                    textStyle =
-                      MaterialTheme.typography.labelMedium.copy(
-                        color = MaterialTheme.colorScheme.onSurface,
-                      ),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions =
-                      KeyboardOptions(
-                        keyboardType = KeyboardType.Uri,
-                        imeAction = ImeAction.Go,
-                      ),
-                    keyboardActions = KeyboardActions(onGo = { onOmniboxSubmit(omniboxQuery) }),
-                    decorationBox = { innerTextField ->
-                      Box(contentAlignment = Alignment.CenterStart) {
-                        if (omniboxQuery.isEmpty()) {
-                          Text(
-                            text = "검색 또는 주소 입력",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                          )
-                        }
-                        innerTextField()
-                      }
-                    },
+                if (expandBarOnUrlEdit) {
+                  @Suppress("DEPRECATION")
+                  val clipboardManager = LocalClipboardManager.current
+                  val urlScrollState = rememberScrollState()
+                  Column(
                     modifier =
-                      Modifier.weight(1f).focusRequester(focusRequester).testTag("omnibox_input"),
-                  )
-                  if (omniboxQuery.isNotEmpty()) {
-                    SpringIconButton(
-                      onClick = { onOmniboxQueryChange("") },
-                      shape = innerShape,
-                      modifier = Modifier.size(30.dp),
+                      Modifier.fillMaxSize()
+                        .padding(horizontal = BrowserSpacing.Grid1_5, vertical = 6.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                  ) {
+                    Row(
+                      modifier = Modifier.weight(1f).fillMaxWidth(),
+                      verticalAlignment = Alignment.Top,
+                      horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
                     ) {
                       Icon(
-                        Icons.Outlined.Clear,
-                        contentDescription = "주소 지우기",
-                        modifier = Modifier.size(16.dp),
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = "검색",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 4.dp).size(18.dp),
+                      )
+                      Box(
+                        modifier =
+                          Modifier.weight(1f)
+                            .fillMaxHeight()
+                            .verticalScroll(urlScrollState),
+                        contentAlignment = Alignment.TopStart,
+                      ) {
+                        BasicTextField(
+                          value = omniboxQuery,
+                          onValueChange = { next ->
+                            if (next.contains('\n')) {
+                              onOmniboxSubmit(next.replace("\n", "").trim())
+                            } else {
+                              onOmniboxQueryChange(next)
+                            }
+                          },
+                          singleLine = false,
+                          maxLines = 3,
+                          textStyle =
+                            MaterialTheme.typography.labelMedium.copy(
+                              color = MaterialTheme.colorScheme.onSurface,
+                            ),
+                          cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                          keyboardOptions =
+                            KeyboardOptions(
+                              keyboardType = KeyboardType.Uri,
+                              imeAction = ImeAction.Go,
+                            ),
+                          keyboardActions = KeyboardActions(onGo = { onOmniboxSubmit(omniboxQuery) }),
+                          decorationBox = { innerTextField ->
+                            Box(contentAlignment = Alignment.TopStart) {
+                              if (omniboxQuery.isEmpty()) {
+                                Text(
+                                  text = "검색 또는 주소 입력",
+                                  style = MaterialTheme.typography.labelMedium,
+                                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                  maxLines = 1,
+                                  overflow = TextOverflow.Ellipsis,
+                                )
+                              }
+                              innerTextField()
+                            }
+                          },
+                          modifier =
+                            Modifier.fillMaxWidth()
+                              .focusRequester(focusRequester)
+                              .testTag("omnibox_input"),
+                        )
+                      }
+                      SpringIconButton(
+                        onClick = { onOmniboxSubmit(omniboxQuery) },
+                        shape = innerShape,
+                        modifier = Modifier.size(32.dp).testTag("omnibox_submit_button"),
+                      ) {
+                        Icon(
+                          Icons.AutoMirrored.Outlined.ArrowForward,
+                          contentDescription = "이동",
+                          tint = MaterialTheme.colorScheme.primary,
+                          modifier = Modifier.size(18.dp),
+                        )
+                      }
+                    }
+
+                    Row(
+                      modifier = Modifier.fillMaxWidth(),
+                      horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
+                      verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                      if (omniboxQuery.isNotEmpty()) {
+                        OmniboxUrlActionChip(
+                          icon = Icons.Outlined.ContentCopy,
+                          label = "복사",
+                          shape = innerShape,
+                          onClick = {
+                            clipboardManager.setText(AnnotatedString(omniboxQuery))
+                          },
+                        )
+                      }
+                      OmniboxUrlActionChip(
+                        icon = Icons.Outlined.ContentPaste,
+                        label = "붙여넣기",
+                        shape = innerShape,
+                        onClick = {
+                          clipboardManager.getText()?.text?.takeIf { it.isNotEmpty() }?.let { pasted ->
+                            onOmniboxQueryChange(omniboxQuery + pasted)
+                          }
+                        },
+                      )
+                      if (omniboxQuery.isNotEmpty()) {
+                        OmniboxUrlActionChip(
+                          icon = Icons.Outlined.Clear,
+                          label = "지우기",
+                          shape = innerShape,
+                          onClick = { onOmniboxQueryChange("") },
+                        )
+                      }
+                      OmniboxUrlActionChip(
+                        icon = Icons.Outlined.Close,
+                        label = "닫기",
+                        shape = innerShape,
+                        onClick = onBlurOmnibox,
+                        modifier = Modifier.testTag("omnibox_close_button"),
                       )
                     }
                   }
-                  SpringIconButton(
-                    onClick = { onOmniboxSubmit(omniboxQuery) },
-                    shape = innerShape,
-                    modifier = Modifier.size(32.dp).testTag("omnibox_submit_button"),
+                } else {
+                  Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = BrowserSpacing.Grid1_5),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
                   ) {
                     Icon(
-                      Icons.AutoMirrored.Outlined.ArrowForward,
-                      contentDescription = "이동",
+                      imageVector = Icons.Outlined.Search,
+                      contentDescription = "검색",
                       tint = MaterialTheme.colorScheme.primary,
                       modifier = Modifier.size(18.dp),
                     )
-                  }
-                  SpringIconButton(
-                    onClick = onBlurOmnibox,
-                    shape = innerShape,
-                    modifier = Modifier.size(30.dp).testTag("omnibox_close_button"),
-                  ) {
-                    Icon(
-                      Icons.Outlined.Close,
-                      contentDescription = "취소",
-                      modifier = Modifier.size(16.dp),
+                    BasicTextField(
+                      value = omniboxQuery,
+                      onValueChange = onOmniboxQueryChange,
+                      singleLine = true,
+                      textStyle =
+                        MaterialTheme.typography.labelMedium.copy(
+                          color = MaterialTheme.colorScheme.onSurface,
+                        ),
+                      cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                      keyboardOptions =
+                        KeyboardOptions(
+                          keyboardType = KeyboardType.Uri,
+                          imeAction = ImeAction.Go,
+                        ),
+                      keyboardActions = KeyboardActions(onGo = { onOmniboxSubmit(omniboxQuery) }),
+                      decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                          if (omniboxQuery.isEmpty()) {
+                            Text(
+                              text = "검색 또는 주소 입력",
+                              style = MaterialTheme.typography.labelMedium,
+                              color = MaterialTheme.colorScheme.onSurfaceVariant,
+                              maxLines = 1,
+                              overflow = TextOverflow.Ellipsis,
+                            )
+                          }
+                          innerTextField()
+                        }
+                      },
+                      modifier =
+                        Modifier.weight(1f).focusRequester(focusRequester).testTag("omnibox_input"),
                     )
+                    if (omniboxQuery.isNotEmpty()) {
+                      SpringIconButton(
+                        onClick = { onOmniboxQueryChange("") },
+                        shape = innerShape,
+                        modifier = Modifier.size(30.dp),
+                      ) {
+                        Icon(
+                          Icons.Outlined.Clear,
+                          contentDescription = "주소 지우기",
+                          modifier = Modifier.size(16.dp),
+                        )
+                      }
+                    }
+                    SpringIconButton(
+                      onClick = { onOmniboxSubmit(omniboxQuery) },
+                      shape = innerShape,
+                      modifier = Modifier.size(32.dp).testTag("omnibox_submit_button"),
+                    ) {
+                      Icon(
+                        Icons.AutoMirrored.Outlined.ArrowForward,
+                        contentDescription = "이동",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                      )
+                    }
+                    SpringIconButton(
+                      onClick = onBlurOmnibox,
+                      shape = innerShape,
+                      modifier = Modifier.size(30.dp).testTag("omnibox_close_button"),
+                    ) {
+                      Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = "취소",
+                        modifier = Modifier.size(16.dp),
+                      )
+                    }
                   }
                 }
               } else {
@@ -1445,10 +1625,21 @@ private fun MorphingFloatingPill(
                       alpha = settingsMotion.alpha
                     }
                 ) {
+                  var settingsButtonRect by remember { mutableStateOf(Rect.Zero) }
                   SpringIconButton(
-                    onClick = onOpenSettings,
+                    onClick = {
+                      onOpenSettings(
+                        SpatialDiveOrigin(
+                          boundsInRoot = settingsButtonRect,
+                          cornerRadiusDp = (designConfig.barCornerRadiusDp - 4f).coerceAtLeast(0f),
+                        )
+                      )
+                    },
                     shape = innerShape,
-                    modifier = Modifier.size(buttonSize).testTag("fixed_settings_button"),
+                    modifier =
+                      Modifier.size(buttonSize)
+                        .onGloballyPositioned { coords -> settingsButtonRect = coords.boundsInRoot() }
+                        .testTag("fixed_settings_button"),
                   ) {
                     Icon(
                       imageVector = Icons.Outlined.Settings,
@@ -1462,6 +1653,42 @@ private fun MorphingFloatingPill(
             }
         }
       }
+    }
+  }
+}
+
+@Composable
+private fun OmniboxUrlActionChip(
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  label: String,
+  shape: androidx.compose.ui.graphics.Shape,
+  onClick: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  Surface(
+    onClick = onClick,
+    shape = shape,
+    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+    modifier = modifier.height(26.dp),
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      Icon(
+        imageVector = icon,
+        contentDescription = label,
+        tint = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.size(13.dp),
+      )
+      Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+      )
     }
   }
 }

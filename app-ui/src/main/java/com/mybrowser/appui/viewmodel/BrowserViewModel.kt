@@ -49,6 +49,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class EngineMetaUi(
   val abiVersion: Int = 1,
@@ -56,6 +57,7 @@ data class EngineMetaUi(
   val featuresCsv: String = "",
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class TabFolderUiModel(
   val id: String,
@@ -64,6 +66,7 @@ data class TabFolderUiModel(
   val isExpanded: Boolean,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class TabUiModel(
   val id: String,
@@ -105,6 +108,7 @@ enum class TabViewMode(val id: String, val label: String) {
   }
 }
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class SearchEngineOption(
   val id: String,
@@ -112,6 +116,7 @@ data class SearchEngineOption(
   val homepage: String,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class BlockerStatsUi(
   val enabled: Boolean = true,
@@ -125,6 +130,7 @@ data class BlockerStatsUi(
   val telemetryBlocked: Long = 0,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class OmniboxSuggestionUi(
   val url: String,
@@ -132,6 +138,7 @@ data class OmniboxSuggestionUi(
   val isBookmark: Boolean,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class SnackbarNotification(
   val id: Long,
@@ -222,6 +229,7 @@ enum class BlockerLevel(val id: String, val label: String) {
   }
 }
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class ToolbarConfigUi(
   val leftSlots: List<ToolbarActionId> =
@@ -234,6 +242,7 @@ data class ToolbarConfigUi(
   val pullDownRefresh: Boolean = true,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class BrowserSettingsUi(
   val themeMode: ThemeMode = ThemeMode.SYSTEM,
@@ -243,6 +252,8 @@ data class BrowserSettingsUi(
   val autoHideSensitivity: AutoHideSensitivity = AutoHideSensitivity.MEDIUM,
   val webFontZoomPercent: Int = 100,
   val forceWebDark: Boolean = false,
+  val forceZoomEnabled: Boolean = false,
+  val expandBarOnUrlEdit: Boolean = true,
   val hideStatusBar: Boolean = false,
   val autoDualPaneUnfold: Boolean = false,
   val splitGestureEnabled: Boolean = true,
@@ -269,6 +280,7 @@ data class BrowserSettingsUi(
   val confirmBeforeDownload: Boolean = true,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class SitePolicyUi(
   val javascriptEnabled: Boolean = true,
@@ -284,18 +296,21 @@ data class SitePolicyUi(
   val autoplayMedia: String = "BLOCK",
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class DomainSiteOverrideUi(
   val domain: String,
   val policy: SitePolicyUi,
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class SitePermissionsUiState(
   val globalPolicy: SitePolicyUi = SitePolicyUi(),
   val domainOverrides: List<DomainSiteOverrideUi> = emptyList(),
 )
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class ReaderArticleUi(
   val title: String,
@@ -312,6 +327,7 @@ enum class BrowserOverlay {
   QR_SCANNER,
 }
 
+// [RUST-MIGRATION-TARGET]
 @Immutable
 data class BrowserUiState(
   val tabs: List<TabUiModel> = emptyList(),
@@ -509,6 +525,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     return WebRenderPolicy(
       fontZoomPercent = settings.webFontZoomPercent,
       forceWebDark = settings.forceWebDark,
+      forceZoomEnabled = settings.forceZoomEnabled,
       blockThirdPartyCookies = settings.blockThirdPartyCookies,
       sendDntGpcHeaders = settings.sendDntGpcHeaders,
       httpsOnlyMode = settings.httpsOnlyMode,
@@ -1519,6 +1536,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             barBottomOffsetDp = obj.optDouble("barBottomOffsetDp", 12.0).toFloat(),
             barOpacity = obj.optDouble("barOpacity", 0.90).toFloat(),
             barBlurRadiusDp = obj.optDouble("barBlurRadiusDp", fallbackBlur.toDouble()).toFloat().coerceIn(0f, 32f),
+            animationSpeedScale = obj.optDouble("animationSpeedScale", 1.0).toFloat().coerceIn(0.5f, 2.0f),
           )
       )
     }
@@ -1539,6 +1557,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
               AutoHideSensitivity.fromId(obj.optString("autoHideSensitivity", "MEDIUM")),
             webFontZoomPercent = obj.optInt("webFontZoomPercent", 100),
             forceWebDark = obj.optBoolean("forceWebDark", false),
+            forceZoomEnabled = obj.optBoolean("forceZoomEnabled", false),
+            expandBarOnUrlEdit = obj.optBoolean("expandBarOnUrlEdit", true),
             hideStatusBar = obj.optBoolean("hideStatusBar", false),
             autoDualPaneUnfold = obj.optBoolean("autoDualPaneUnfold", false),
             splitGestureEnabled = obj.optBoolean("splitGestureEnabled", true),

@@ -205,6 +205,8 @@ interface ToolbarConfigContract {
 //     pub auto_hide_sensitivity: String,   // "LOW" | "MEDIUM" | "HIGH"
 //     pub web_font_zoom_percent: i32,      // 75..200
 //     pub force_web_dark: bool,
+//     pub force_zoom_enabled: bool,
+//     pub expand_bar_on_url_edit: bool,
 //     pub hide_status_bar: bool,
 //     pub auto_dual_pane_unfold: bool,
 //     pub split_gesture_enabled: bool,
@@ -249,6 +251,7 @@ interface SettingsStoreContract {
 //     pub bar_bottom_offset_dp: f32,   // 4.0..40.0
 //     pub bar_opacity: f32,            // 0.55..1.00
 //     pub bar_blur_radius_dp: f32,     // 0.0..32.0
+//     pub animation_speed_scale: f32,  // 0.50..2.00
 // }
 interface DesignConfigContract {
   fun getDesignConfigJson(): String

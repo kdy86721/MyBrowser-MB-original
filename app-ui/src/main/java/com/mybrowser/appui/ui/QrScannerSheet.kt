@@ -115,14 +115,15 @@ fun QrScannerOverlay(
   val design = LocalDesignConfig.current
 
   Surface(
-    color = MaterialTheme.colorScheme.background.copy(alpha = 0.98f),
-    modifier =
-      Modifier.fillMaxSize()
-        .statusBarsPadding()
-        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
+    color = MaterialTheme.colorScheme.background,
+    modifier = Modifier.fillMaxSize(),
   ) {
     Column(
-      modifier = Modifier.fillMaxSize().padding(BrowserSpacing.Grid2),
+      modifier =
+        Modifier.fillMaxSize()
+          .statusBarsPadding()
+          .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+          .padding(BrowserSpacing.Grid2),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Column(

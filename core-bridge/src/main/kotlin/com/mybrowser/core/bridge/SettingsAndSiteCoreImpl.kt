@@ -19,6 +19,8 @@ class SettingsStoreImpl : SettingsStoreContract {
   private var autoHideSensitivity: String = "MEDIUM"
   private var webFontZoomPercent: Int = 100 // 75..200
   private var forceWebDark: Boolean = false
+  private var forceZoomEnabled: Boolean = false
+  private var expandBarOnUrlEdit: Boolean = true
   private var hideStatusBar: Boolean = false
   private var autoDualPaneUnfold: Boolean = false
   private var splitGestureEnabled: Boolean = true
@@ -64,6 +66,8 @@ class SettingsStoreImpl : SettingsStoreContract {
       webFontZoomPercent = it.coerceIn(75, 200)
     }
     extractBoolean(rawJson, "forceWebDark")?.let { forceWebDark = it }
+    extractBoolean(rawJson, "forceZoomEnabled")?.let { forceZoomEnabled = it }
+    extractBoolean(rawJson, "expandBarOnUrlEdit")?.let { expandBarOnUrlEdit = it }
     extractBoolean(rawJson, "hideStatusBar")?.let { hideStatusBar = it }
     extractBoolean(rawJson, "autoDualPaneUnfold")?.let { autoDualPaneUnfold = it }
     extractBoolean(rawJson, "splitGestureEnabled")?.let { splitGestureEnabled = it }
@@ -101,6 +105,8 @@ class SettingsStoreImpl : SettingsStoreContract {
     autoHideSensitivity = "MEDIUM"
     webFontZoomPercent = 100
     forceWebDark = false
+    forceZoomEnabled = false
+    expandBarOnUrlEdit = true
     hideStatusBar = false
     autoDualPaneUnfold = false
     splitGestureEnabled = true
@@ -148,6 +154,8 @@ class SettingsStoreImpl : SettingsStoreContract {
       "webFontZoomPercent" ->
         value.toIntOrNull()?.let { webFontZoomPercent = it.coerceIn(75, 200) }
       "forceWebDark" -> value.toBooleanStrictOrNull()?.let { forceWebDark = it }
+      "forceZoomEnabled" -> value.toBooleanStrictOrNull()?.let { forceZoomEnabled = it }
+      "expandBarOnUrlEdit" -> value.toBooleanStrictOrNull()?.let { expandBarOnUrlEdit = it }
       "hideStatusBar" -> value.toBooleanStrictOrNull()?.let { hideStatusBar = it }
       "autoDualPaneUnfold" -> value.toBooleanStrictOrNull()?.let { autoDualPaneUnfold = it }
       "splitGestureEnabled" -> value.toBooleanStrictOrNull()?.let { splitGestureEnabled = it }
@@ -190,7 +198,7 @@ class SettingsStoreImpl : SettingsStoreContract {
   }
 
   private fun serializeLocked(): String {
-    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"tabViewMode":${JsonMini.quote(tabViewMode)},"defaultTabSortMode":${JsonMini.quote(defaultTabSortMode)},"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
+    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"forceZoomEnabled":$forceZoomEnabled,"expandBarOnUrlEdit":$expandBarOnUrlEdit,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"tabViewMode":${JsonMini.quote(tabViewMode)},"defaultTabSortMode":${JsonMini.quote(defaultTabSortMode)},"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
   }
 
   private fun extractString(json: String, key: String): String? =
@@ -222,6 +230,7 @@ class DesignConfigImpl : DesignConfigContract {
   private var barBottomOffsetDp: Float = 12f      // 4f..40f
   private var barOpacity: Float = 0.90f           // 0.55f..1.00f
   private var barBlurRadiusDp: Float = 18f        // 0f..32f
+  private var animationSpeedScale: Float = 1.0f   // 0.5f..2.0f
 
   override fun getDesignConfigJson(): String = synchronized(lock) { serializeLocked() }
 
@@ -241,6 +250,9 @@ class DesignConfigImpl : DesignConfigContract {
     extractFloat(rawJson, "barBottomOffsetDp")?.let { barBottomOffsetDp = it.coerceIn(4f, 40f) }
     extractFloat(rawJson, "barOpacity")?.let { barOpacity = it.coerceIn(0.55f, 1.0f) }
     extractFloat(rawJson, "barBlurRadiusDp")?.let { barBlurRadiusDp = it.coerceIn(0f, 32f) }
+    extractFloat(rawJson, "animationSpeedScale")?.let {
+      animationSpeedScale = it.coerceIn(0.5f, 2.0f)
+    }
 
     // Legacy key backwards-compatibility migration
     extractFloat(rawJson, "blurIntensityPercent")?.let {
@@ -270,6 +282,7 @@ class DesignConfigImpl : DesignConfigContract {
     barBottomOffsetDp = 12f
     barOpacity = 0.90f
     barBlurRadiusDp = 18f
+    animationSpeedScale = 1.0f
     serializeLocked()
   }
 
@@ -288,11 +301,12 @@ class DesignConfigImpl : DesignConfigContract {
       "surfaceOpacityPercent" -> barOpacity = (parsed / 100f).coerceIn(0.55f, 1.0f)
       "barBlurRadiusDp" -> barBlurRadiusDp = parsed.coerceIn(0f, 32f)
       "blurIntensityPercent" -> barBlurRadiusDp = (parsed * 0.32f).coerceIn(0f, 32f)
+      "animationSpeedScale" -> animationSpeedScale = parsed.coerceIn(0.5f, 2.0f)
     }
   }
 
   private fun serializeLocked(): String {
-    return """{"iconCornerRadiusDp":$iconCornerRadiusDp,"barCornerRadiusDp":$barCornerRadiusDp,"cardCornerRadiusDp":$cardCornerRadiusDp,"barHeightDp":$barHeightDp,"barWidthFraction":$barWidthFraction,"barHorizontalBias":$barHorizontalBias,"barBottomOffsetDp":$barBottomOffsetDp,"barOpacity":$barOpacity,"barBlurRadiusDp":$barBlurRadiusDp}"""
+    return """{"iconCornerRadiusDp":$iconCornerRadiusDp,"barCornerRadiusDp":$barCornerRadiusDp,"cardCornerRadiusDp":$cardCornerRadiusDp,"barHeightDp":$barHeightDp,"barWidthFraction":$barWidthFraction,"barHorizontalBias":$barHorizontalBias,"barBottomOffsetDp":$barBottomOffsetDp,"barOpacity":$barOpacity,"barBlurRadiusDp":$barBlurRadiusDp,"animationSpeedScale":$animationSpeedScale}"""
   }
 
   private fun extractFloat(json: String, key: String): Float? =
