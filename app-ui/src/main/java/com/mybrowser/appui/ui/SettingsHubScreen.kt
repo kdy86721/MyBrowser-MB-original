@@ -21,15 +21,19 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -39,6 +43,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AddCircleOutline
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CameraAlt
@@ -66,15 +71,18 @@ import androidx.compose.material.icons.outlined.Palette
 import androidx.compose.material.icons.outlined.PlayCircleOutline
 import androidx.compose.material.icons.outlined.PrivacyTip
 import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RestartAlt
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Sensors
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material.icons.outlined.Swipe
 import androidx.compose.material.icons.outlined.Tab
@@ -117,6 +125,7 @@ import com.mybrowser.appui.viewmodel.SearchEngineOption
 import com.mybrowser.appui.viewmodel.SitePermissionsUiState
 import com.mybrowser.appui.viewmodel.SplitGestureSensitivity
 import com.mybrowser.appui.viewmodel.StartupBehavior
+import com.mybrowser.appui.viewmodel.TabSortMode
 import com.mybrowser.appui.viewmodel.ToolbarActionId
 import com.mybrowser.appui.viewmodel.ToolbarAlignment
 import com.mybrowser.appui.viewmodel.ToolbarConfigUi
@@ -184,7 +193,10 @@ fun SettingsHubOverlay(
 
   Surface(
     color = MaterialTheme.colorScheme.background,
-    modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    modifier =
+      Modifier.fillMaxSize()
+        .statusBarsPadding()
+        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
   ) {
     Column(modifier = Modifier.fillMaxSize()) {
       Row(
@@ -557,10 +569,10 @@ private fun SettingsDetailPane(
               }
             }
 
-            Surface(
+            FrostedFloatingSurface(
               shape = designConfig.barOuterShape(),
-              color = MaterialTheme.colorScheme.surfaceVariant,
-              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+              opacity = designConfig.barOpacity,
+              blurRadiusDp = designConfig.barBlurRadiusDp,
               modifier = Modifier.fillMaxWidth(),
             ) {
               Row(
@@ -723,6 +735,44 @@ private fun SettingsDetailPane(
               checked = toolbarConfig.pullDownRefresh,
               onCheckedChange = { onSetGestures(toolbarConfig.swipeBarSwitchTabs, it) },
             )
+            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+            ) {
+              Icon(
+                imageVector = Icons.Outlined.Sort,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp),
+              )
+              Text("탭창 기본 정렬 방식", style = MaterialTheme.typography.labelLarge)
+            }
+            FlowRow(
+              horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+              verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+            ) {
+              TabSortMode.entries.forEach { mode ->
+                val modeIcon =
+                  when (mode) {
+                    TabSortMode.RECENT -> Icons.Outlined.Schedule
+                    TabSortMode.CREATED -> Icons.Outlined.AddCircleOutline
+                    TabSortMode.DOMAIN -> Icons.Outlined.Public
+                    TabSortMode.FOLDERS_FIRST -> Icons.Outlined.Folder
+                    TabSortMode.PINNED_FIRST -> Icons.Outlined.PushPin
+                  }
+                FilterChip(
+                  selected = settings.defaultTabSortMode == mode,
+                  onClick = { onUpdateSetting("defaultTabSortMode", mode.id) },
+                  shape = designConfig.cardInnerShape(),
+                  leadingIcon = {
+                    Icon(modeIcon, contentDescription = null, modifier = Modifier.size(15.dp))
+                  },
+                  label = { Text(mode.label, style = MaterialTheme.typography.labelSmall) },
+                  modifier = Modifier.testTag("settings_default_sort_${mode.id.lowercase()}"),
+                )
+              }
+            }
           }
         }
 

@@ -172,6 +172,8 @@ class CoreBridgeTest {
     settings.updateSetting("hideStatusBar", "true")
     settings.updateSetting("blockerLevel", "STRICT")
     settings.updateSetting("autoCloseDays", "7")
+    settings.updateSetting("tabViewMode", "COMPACT_LIST")
+    settings.updateSetting("defaultTabSortMode", "FOLDERS_FIRST")
     val updated = settings.updateSetting("confirmBeforeDownload", "false")
 
     assertTrue(updated.contains(""""themeMode":"DARK""""))
@@ -180,6 +182,8 @@ class CoreBridgeTest {
     assertTrue(updated.contains(""""hideStatusBar":true"""))
     assertTrue(updated.contains(""""blockerLevel":"STRICT""""))
     assertTrue(updated.contains(""""autoCloseDays":7"""))
+    assertTrue(updated.contains(""""tabViewMode":"COMPACT_LIST""""))
+    assertTrue(updated.contains(""""defaultTabSortMode":"FOLDERS_FIRST""""))
     assertTrue(updated.contains(""""confirmBeforeDownload":false"""))
 
     val restored = SettingsStoreImpl().restoreSettingsJson(updated)
@@ -221,5 +225,24 @@ class CoreBridgeTest {
 
     val migrated = DesignConfigImpl().restoreDesignConfigJson("""{"blurIntensityPercent":50}""")
     assertTrue(migrated.contains(""""barBlurRadiusDp":16.0"""))
+  }
+
+  @Test
+  fun settingsStore_defaultsAutoDualPaneUnfoldToFalseAndTabCloseExits2TabSplit() {
+    val settings = SettingsStoreImpl()
+    assertTrue(settings.getSettingsJson().contains(""""autoDualPaneUnfold":false"""))
+
+    val fsm = TabStateMachineImpl()
+    val splitJson = fsm.splitActiveTabToPane(directionRight = true)
+    assertTrue(splitJson.contains(""""splitMode":true"""))
+    val primaryId = Regex(""""primaryTabId":"([^"]+)"""").find(splitJson)!!.groupValues[1]
+    val secondaryId = Regex(""""secondaryTabId":"([^"]+)"""").find(splitJson)!!.groupValues[1]
+    assertTrue(primaryId != secondaryId)
+
+    // Closing primary tab when only 2 tabs exist must cleanly collapse splitMode instead of primary == secondary
+    val afterCloseJson = fsm.closeTab(primaryId)
+    assertTrue(afterCloseJson.contains(""""splitMode":false"""))
+    assertTrue(afterCloseJson.contains(""""secondaryTabId":null"""))
+    assertTrue(afterCloseJson.contains(""""primaryTabId":"$secondaryId""""))
   }
 }

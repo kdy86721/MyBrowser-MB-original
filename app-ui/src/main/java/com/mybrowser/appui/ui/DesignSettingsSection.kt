@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.BlurOn
 import androidx.compose.material.icons.outlined.BrightnessAuto
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Opacity
 import androidx.compose.material.icons.outlined.Palette
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.outlined.RoundedCorner
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
+import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -62,6 +64,7 @@ import com.mybrowser.appui.theme.ThemeMode
 import com.mybrowser.appui.viewmodel.AutoHideSensitivity
 import com.mybrowser.appui.viewmodel.BrowserSettingsUi
 import com.mybrowser.appui.viewmodel.FloatingBarStyle
+import com.mybrowser.appui.viewmodel.TabViewMode
 import com.mybrowser.appui.viewmodel.ToolbarAlignment
 import com.mybrowser.appui.viewmodel.ToolbarConfigUi
 import java.util.Locale
@@ -497,6 +500,27 @@ internal fun LazyListScope.designSettingsItems(
         checked = settings.autoDualPaneUnfold,
         onCheckedChange = { onUpdateSetting("autoDualPaneUnfold", it.toString()) },
       )
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+      Text("탭창 보기 방식", style = MaterialTheme.typography.labelLarge)
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
+      ) {
+        TabViewMode.entries.forEach { mode ->
+          val icon =
+            when (mode) {
+              TabViewMode.THUMBNAIL_GRID -> Icons.Outlined.GridView
+              TabViewMode.COMPACT_LIST -> Icons.Outlined.ViewAgenda
+            }
+          IconSegmentTile(
+            icon = icon,
+            label = mode.label,
+            selected = settings.tabViewMode == mode,
+            onClick = { onUpdateSetting("tabViewMode", mode.id) },
+            modifier = Modifier.weight(1f).testTag("design_tab_view_${mode.id.lowercase()}"),
+          )
+        }
+      }
     }
   }
 }
@@ -521,7 +545,7 @@ private fun MiniPreviewFloatingBar(
       Box(
         modifier =
           Modifier.size(24.dp)
-            .clip(designConfig.iconShape())
+            .clip(designConfig.barInnerShape())
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
       ) {
@@ -545,7 +569,7 @@ private fun MiniPreviewFloatingBar(
       Box(
         modifier =
           Modifier.size(24.dp)
-            .clip(designConfig.iconShape())
+            .clip(designConfig.barInnerShape())
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
       ) {

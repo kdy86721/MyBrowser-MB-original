@@ -43,10 +43,10 @@ data class FoldablePostureState(
     get() =
       mode == BrowserPostureMode.PASSPORT_FLAT ||
         mode == BrowserPostureMode.BOOK_HALF_OPENED ||
-        windowWidthDp >= 560.dp
+        (windowWidthDp >= 560.dp && windowHeightDp >= 420.dp)
 
   val isPassportGeometry: Boolean
-    get() = windowWidthDp >= 520.dp && aspectRatio in 0.62f..1.60f
+    get() = windowWidthDp >= 520.dp && windowHeightDp >= 420.dp && aspectRatio in 0.62f..1.60f
 }
 
 @Composable
@@ -90,7 +90,8 @@ fun rememberFoldablePostureState(
           BrowserPostureMode.TABLETOP_HALF_OPENED
         foldingFeature.state == FoldingFeature.State.HALF_OPENED && !isHorizontal ->
           BrowserPostureMode.BOOK_HALF_OPENED
-        availableWidthDp >= 520.dp -> BrowserPostureMode.PASSPORT_FLAT
+        availableWidthDp >= 520.dp && availableHeightDp >= 420.dp ->
+          BrowserPostureMode.PASSPORT_FLAT
         else -> BrowserPostureMode.COVER_COMPACT
       }
 
@@ -113,7 +114,7 @@ fun rememberFoldablePostureState(
 
   // Fallback geometry detection for 1:1.4 Passport inner screen or unfolded tablets without Hinge HAL
   val mode =
-    if (availableWidthDp >= 520.dp) {
+    if (availableWidthDp >= 520.dp && availableHeightDp >= 420.dp) {
       BrowserPostureMode.PASSPORT_FLAT
     } else {
       BrowserPostureMode.COVER_COMPACT

@@ -212,6 +212,8 @@ interface ToolbarConfigContract {
 //     pub swipe_up_open_tabs: bool,
 //     pub tab_swipe_to_close_enabled: bool,
 //     pub tab_drag_folder_enabled: bool,
+//     pub tab_view_mode: String,           // "THUMBNAIL_GRID" | "COMPACT_LIST"
+//     pub default_tab_sort_mode: String,   // "RECENT" | "CREATED" | "DOMAIN" | "FOLDERS_FIRST" | "PINNED_FIRST"
 //     pub search_engine_id: String,
 //     pub custom_search_url: String,
 //     pub tracker_blocking_enabled: bool,

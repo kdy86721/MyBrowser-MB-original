@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -15,9 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Language
@@ -30,9 +29,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -55,6 +54,7 @@ import java.util.Locale
 fun StartPageContent(
   paneIndex: Int,
   isFocusedPane: Boolean,
+  isSplitMode: Boolean = false,
   postureState: FoldablePostureState,
   blockerStats: BlockerStatsUi,
   searchEngineLabel: String,
@@ -70,19 +70,18 @@ fun StartPageContent(
   val primaryColor = MaterialTheme.colorScheme.primary
   val secondaryColor = MaterialTheme.colorScheme.secondary
   val bgColor = MaterialTheme.colorScheme.background
-  val listState = rememberLazyListState()
+  val scrollState = rememberScrollState()
   var lastOffset by remember { mutableIntStateOf(0) }
-  val scrollPos by remember {
-    derivedStateOf { listState.firstVisibleItemIndex * 1000 + listState.firstVisibleItemScrollOffset }
-  }
+  var hasInitializedScroll by remember { mutableStateOf(false) }
 
-  LaunchedEffect(listState) {
-    snapshotFlow { scrollPos }
+  LaunchedEffect(scrollState) {
+    snapshotFlow { scrollState.value }
       .collect { current ->
         val dy = current - lastOffset
-        if (dy != 0 && lastOffset != 0) {
+        if (hasInitializedScroll && dy != 0) {
           onScrollDelta(dy)
         }
+        hasInitializedScroll = true
         lastOffset = current
       }
   }
@@ -117,18 +116,18 @@ fun StartPageContent(
   ) {
     val columns = if (maxWidth >= 520.dp) 3 else 2
 
-    LazyColumn(
-      state = listState,
-      modifier = Modifier.fillMaxSize(),
-      contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 104.dp),
+    Column(
+      modifier =
+        Modifier.fillMaxSize()
+          .verticalScroll(scrollState)
+          .padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 104.dp),
       verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid2),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      item(key = "header") {
-        Column(
-          modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
-        ) {
+      Column(
+        modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
+      ) {
           Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -221,12 +220,10 @@ fun StartPageContent(
               }
             }
           }
-        }
       }
 
       // 프라이버시 상태 스트립
-      item(key = "shield_strip") {
-        SpringPressSurface(
+      SpringPressSurface(
           onClick = onOpenInspector,
           shape = LocalDesignConfig.current.cardOuterShape(),
           unselectedColor = MaterialTheme.colorScheme.surface,
@@ -303,12 +300,12 @@ fun StartPageContent(
                 ) {
                   Icon(
                     imageVector = Icons.Outlined.Splitscreen,
-                    contentDescription = "화면 분할",
+                    contentDescription = if (isSplitMode) "창 합치기" else "화면 분할",
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(16.dp),
                   )
                   Text(
-                    text = "분할",
+                    text = if (isSplitMode) "합치기" else "분할",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.primary,
                   )
@@ -317,14 +314,12 @@ fun StartPageContent(
             }
           }
         }
-      }
 
       // 자주 방문 그리드
-      item(key = "speed_dial_grid") {
-        Column(
-          modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(),
-          verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
-        ) {
+      Column(
+        modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1_5),
+      ) {
           Text(
             text = "자주 방문",
             style = MaterialTheme.typography.labelSmall,
@@ -350,7 +345,6 @@ fun StartPageContent(
             }
           }
         }
-      }
     }
   }
 }

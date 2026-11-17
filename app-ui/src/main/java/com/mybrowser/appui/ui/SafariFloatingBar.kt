@@ -4,8 +4,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,15 +22,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -80,6 +81,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.BiasAlignment
@@ -91,6 +93,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -103,6 +107,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.mybrowser.appui.viewmodel.FloatingBarStyle
 import com.mybrowser.appui.viewmodel.OmniboxSuggestionUi
 import com.mybrowser.appui.viewmodel.SearchEngineOption
@@ -164,7 +169,9 @@ fun SafariFloatingBar(
   onCollapseBar: () -> Unit = {},
   onSwipeUpOpenTabs: () -> Unit = {},
   onSwipeUpDragProgress: (Float) -> Unit = {},
-  onSwipeUpDragEnd: (Boolean) -> Unit = { completed -> if (completed) onSwipeUpOpenTabs() },
+  onSwipeUpDragEnd: (completed: Boolean, velocityYPxPerSec: Float) -> Unit = { completed, _ ->
+    if (completed) onSwipeUpOpenTabs()
+  },
   onSwipeTabDelta: (Int) -> Unit = {},
   onTriggerSplitGesture: (directionRight: Boolean) -> Unit = {},
   onCloseSplitPane: () -> Unit = {},
@@ -197,7 +204,10 @@ fun SafariFloatingBar(
   var isSplitArmed by remember { mutableStateOf(false) }
   var splitDragX by remember { mutableFloatStateOf(0f) }
   val density = LocalDensity.current
-  val thresholdPx = with(density) { splitGestureSensitivity.swipeThresholdDp.dp.toPx() }
+  val rawThresholdPx = with(density) { splitGestureSensitivity.swipeThresholdDp.dp.toPx() }
+  val thresholdPx =
+    if (isSplitCompact) minOf(rawThresholdPx, with(density) { 54.dp.toPx() })
+    else rawThresholdPx
   val splitDirection by remember(isSplitArmed, splitDragX, thresholdPx) {
     derivedStateOf {
       when {
@@ -208,20 +218,46 @@ fun SafariFloatingBar(
       }
     }
   }
+  val haptic = LocalHapticFeedback.current
+  LaunchedEffect(isSplitArmed, splitDirection) {
+    if (isSplitArmed && splitDirection != SplitPreviewDirection.NEUTRAL) {
+      haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+    }
+  }
 
-  val widthFraction = designConfig.barWidthFraction.coerceIn(0.60f, 1.0f)
+  val shouldShowCollapsed by remember(isCollapsed, isOmniboxFocused) {
+    derivedStateOf { isCollapsed && !isOmniboxFocused }
+  }
+  val pillProgress = remember { Animatable(if (shouldShowCollapsed) 1f else 0f) }
+  var isRestoringPill by remember { mutableStateOf(false) }
+  LaunchedEffect(shouldShowCollapsed) {
+    isRestoringPill = !shouldShowCollapsed
+    pillProgress.animateTo(
+      targetValue = if (shouldShowCollapsed) 1f else 0f,
+      animationSpec = BrowserMotion.morphingPillSpring(),
+    )
+  }
+
+  val widthFraction =
+    if (isSplitCompact) designConfig.barWidthFraction.coerceIn(0.88f, 1.0f)
+    else designConfig.barWidthFraction.coerceIn(0.60f, 1.0f)
+  val animatedBottomPadding =
+    androidx.compose.ui.unit.lerp(
+      designConfig.barBottomOffsetDp.coerceIn(4f, 40f).dp,
+      10.dp,
+      pillProgress.value.coerceIn(0f, 1f),
+    )
 
   Column(
     modifier =
       modifier
         .fillMaxWidth()
-        .navigationBarsPadding()
-        .imePadding()
+        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
         .padding(
           start = if (isSplitCompact) 6.dp else BrowserSpacing.Grid1_5,
           end = if (isSplitCompact) 6.dp else BrowserSpacing.Grid1_5,
           top = BrowserSpacing.Grid1,
-          bottom = designConfig.barBottomOffsetDp.coerceIn(4f, 40f).dp,
+          bottom = animatedBottomPadding,
         ),
     horizontalAlignment = horizontalAlignment,
     verticalArrangement = Arrangement.spacedBy(BrowserSpacing.Grid1),
@@ -360,11 +396,7 @@ fun SafariFloatingBar(
       )
     }
 
-    // 하단 통합 플로팅 바 (접힘 ↔ 확장 단일 컨테이너 스프링 모핑)
-    val shouldShowCollapsed by remember(isCollapsed, isOmniboxFocused) {
-      derivedStateOf { isCollapsed && !isOmniboxFocused }
-    }
-
+    // 하단 통합 플로팅 바 (접힘 ↔ 확장 단일 Animatable<Float> 120Hz 스프링 모핑)
     MorphingFloatingPill(
       focusedTab = focusedTab,
       tabCount = tabCount,
@@ -375,6 +407,8 @@ fun SafariFloatingBar(
       isPaneFocused = isPaneFocused,
       isBookmarked = isBookmarked,
       isDesktopMode = isDesktopMode,
+      pillProgress = pillProgress.value.coerceIn(0f, 1f),
+      isRestoringPill = isRestoringPill,
       isCollapsed = shouldShowCollapsed,
       isOmniboxFocused = isOmniboxFocused,
       omniboxQuery = omniboxQuery,
@@ -385,6 +419,7 @@ fun SafariFloatingBar(
       swipeUpOpenTabs = swipeUpOpenTabs,
       splitGestureEnabled = splitGestureEnabled,
       supportsDualPane = supportsDualPane,
+      isSplitArmed = isSplitArmed,
       splitThresholdPx = thresholdPx,
       heroDragLiftProgress = heroDragLiftProgress,
       onSplitArmChanged = { armed, dragX ->
@@ -555,6 +590,8 @@ private fun MorphingFloatingPill(
   isPaneFocused: Boolean,
   isBookmarked: Boolean,
   isDesktopMode: Boolean,
+  pillProgress: Float,
+  isRestoringPill: Boolean,
   isCollapsed: Boolean,
   isOmniboxFocused: Boolean,
   omniboxQuery: String,
@@ -565,6 +602,7 @@ private fun MorphingFloatingPill(
   swipeUpOpenTabs: Boolean,
   splitGestureEnabled: Boolean,
   supportsDualPane: Boolean,
+  isSplitArmed: Boolean,
   splitThresholdPx: Float,
   heroDragLiftProgress: Float,
   onSplitArmChanged: (Boolean, Float) -> Unit,
@@ -572,7 +610,7 @@ private fun MorphingFloatingPill(
   onCloseSplitPane: () -> Unit,
   onSwipeTabDelta: (Int) -> Unit,
   onSwipeUpDragProgress: (Float) -> Unit,
-  onSwipeUpDragEnd: (Boolean) -> Unit,
+  onSwipeUpDragEnd: (completed: Boolean, velocityYPxPerSec: Float) -> Unit,
   onExpandBar: () -> Unit,
   onCollapseBar: () -> Unit,
   onFocusOmnibox: () -> Unit,
@@ -588,6 +626,14 @@ private fun MorphingFloatingPill(
     if (isOmniboxFocused) {
       focusRequester.requestFocus()
     }
+  }
+
+  val omniboxFocusAnim = remember { Animatable(if (isOmniboxFocused) 1f else 0f) }
+  LaunchedEffect(isOmniboxFocused) {
+    omniboxFocusAnim.animateTo(
+      targetValue = if (isOmniboxFocused) 1f else 0f,
+      animationSpec = BrowserMotion.morphingPillSpring(),
+    )
   }
 
   val haptic = LocalHapticFeedback.current
@@ -607,13 +653,6 @@ private fun MorphingFloatingPill(
     }
   }
 
-  val collapseProgress by
-    animateFloatAsState(
-      targetValue = if (isCollapsed && !isOmniboxFocused) 1f else 0f,
-      animationSpec = BrowserMotion.morphingPillSpring(),
-      label = "MorphingPillCollapse",
-    )
-
   val surfaceAlpha =
     if (floatingBarStyle == FloatingBarStyle.TRANSLUCENT_GLASS) {
       designConfig.barOpacity.coerceIn(0.55f, 1f)
@@ -628,59 +667,66 @@ private fun MorphingFloatingPill(
     }
 
   val barHeight = designConfig.barHeightDp.coerceIn(44f, 68f)
-  val animatedHeight = androidx.compose.ui.unit.lerp(barHeight.dp, 40.dp, collapseProgress)
+  val animatedHeight = androidx.compose.ui.unit.lerp(barHeight.dp, 36.dp, pillProgress)
   val animatedCorner =
     androidx.compose.ui.unit.lerp(
       designConfig.barCornerRadiusDp.coerceIn(0f, 36f).dp,
-      20.dp,
-      collapseProgress,
+      18.dp, // 50% of 36.dp compact pill height
+      pillProgress,
     )
   val outerShape = androidx.compose.foundation.shape.RoundedCornerShape(animatedCorner)
   val innerShape = designConfig.barInnerShape()
 
-  val targetOmniboxHeight =
-    if (isOmniboxFocused) {
-      (barHeight - 8f).coerceIn(34f, 60f).dp
-    } else {
-      (barHeight - 12f).coerceIn(32f, 56f).dp
-    }
-  val omniboxHeight by
-    animateDpAsState(
-      targetValue = targetOmniboxHeight,
-      animationSpec = BrowserMotion.expressiveSpring(),
-      label = "OmniboxHeightMorph",
+  val omniboxFocus = omniboxFocusAnim.value.coerceIn(0f, 1f)
+  val omniboxHeight =
+    androidx.compose.ui.unit.lerp(
+      androidx.compose.ui.unit.lerp(
+        (barHeight - 12f).coerceIn(32f, 56f).dp,
+        (barHeight - 8f).coerceIn(34f, 60f).dp,
+        omniboxFocus,
+      ),
+      30.dp,
+      pillProgress,
     )
 
   val canLongPressSplit = supportsDualPane && splitGestureEnabled
+  val isOmniboxGestureDisabled = isOmniboxFocused || isCollapsed || pillProgress > 0.3f
+
+  val currentOnFocusOmnibox by rememberUpdatedState(onFocusOmnibox)
+  val currentOnSwipeTabDelta by rememberUpdatedState(onSwipeTabDelta)
+  val currentOnSwipeUpDragProgress by rememberUpdatedState(onSwipeUpDragProgress)
+  val currentOnSwipeUpDragEnd by rememberUpdatedState(onSwipeUpDragEnd)
+  val currentOnCollapseBar by rememberUpdatedState(onCollapseBar)
+  val currentOnSplitArmChanged by rememberUpdatedState(onSplitArmChanged)
+  val currentOnTriggerSplitGesture by rememberUpdatedState(onTriggerSplitGesture)
+  val currentSplitHoldActive by rememberUpdatedState(isHoldingIdle || isSplitArmed)
 
   // 통합 제스처 머신:
   // - 짧은 탭 -> 주소창 포커스
   // - 좌우 스와이프 -> 탭 전환
-  // - 위로 드래그 -> 실시간 Hero Tab-Fly 미리보기 + 탭 목록 진입
+  // - 위로 드래그 -> VelocityTracker 기반 1:1 Hero Tab-Fly + 탭 서랍 진입
   // - 아래로 스와이프 -> 알약 축소
   // - 1000ms 길게 누르기 + 좌우 드래그 -> 1:1.4 즉시 분할
   val omniboxGestureModifier =
     remember(
-      isOmniboxFocused,
-      isCollapsed,
+      isOmniboxGestureDisabled,
       canLongPressSplit,
       swipeEnabled,
       swipeUpOpenTabs,
       tabCount,
       splitThresholdPx,
     ) {
-      if (isOmniboxFocused || isCollapsed) {
+      if (isOmniboxGestureDisabled) {
         Modifier
       } else {
         Modifier.semantics(mergeDescendants = false) {
           role = Role.Button
           onClick(label = "주소 입력") {
-            onFocusOmnibox()
+            currentOnFocusOmnibox()
             true
           }
         }.pointerInput(
-          isOmniboxFocused,
-          isCollapsed,
+          isOmniboxGestureDisabled,
           canLongPressSplit,
           swipeEnabled,
           swipeUpOpenTabs,
@@ -693,6 +739,9 @@ private fun MorphingFloatingPill(
             val downPos = down.position
             val startTime = System.currentTimeMillis()
             val holdDurationMs = 1000L
+            val velocityTracker = VelocityTracker().apply {
+              addPosition(down.uptimeMillis, down.position)
+            }
 
             var movedEarly = false
             var releasedEarly = false
@@ -729,6 +778,7 @@ private fun MorphingFloatingPill(
                   releasedEarly = true
                   break
                 }
+                velocityTracker.addPosition(change.uptimeMillis, change.position)
 
                 val dx = change.position.x - downPos.x
                 val dy = change.position.y - downPos.y
@@ -744,7 +794,7 @@ private fun MorphingFloatingPill(
               isHoldingIdle = false
 
               if (releasedEarly) {
-                onFocusOmnibox()
+                currentOnFocusOmnibox()
                 return@awaitEachGesture
               }
 
@@ -752,21 +802,21 @@ private fun MorphingFloatingPill(
                 var trackingHeroFly = false
                 var latestHeroProgress = 0f
                 var quickActionDone = false
-                val heroMaxPx = 150.dp.toPx().coerceAtLeast(120f)
+                val heroMaxPx = 180.dp.toPx().coerceAtLeast(140f)
 
                 fun handleMove(dx: Float, dy: Float) {
                   if (quickActionDone) return
                   if (!trackingHeroFly && abs(dx) > abs(dy) * 1.15f && swipeEnabled && tabCount > 1 && abs(dx) > 52f) {
                     quickActionDone = true
-                    onSwipeTabDelta(if (dx > 0f) -1 else 1)
+                    currentOnSwipeTabDelta(if (dx > 0f) -1 else 1)
                   } else if (dy < -touchSlop && (trackingHeroFly || abs(dy) >= abs(dx)) && swipeUpOpenTabs) {
                     trackingHeroFly = true
                     latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
-                    onSwipeUpDragProgress(latestHeroProgress)
+                    currentOnSwipeUpDragProgress(latestHeroProgress)
                   } else if (!trackingHeroFly && dy > 44f && abs(dy) > abs(dx)) {
                     quickActionDone = true
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onCollapseBar()
+                    currentOnCollapseBar()
                   }
                 }
 
@@ -775,22 +825,24 @@ private fun MorphingFloatingPill(
                   val ev = awaitPointerEvent()
                   val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
                   if (ch == null || !ch.pressed) break
+                  velocityTracker.addPosition(ch.uptimeMillis, ch.position)
                   handleMove(ch.position.x - downPos.x, ch.position.y - downPos.y)
                   ch.consume()
                 }
                 if (trackingHeroFly) {
-                  val completed = latestHeroProgress >= 0.36f
+                  val velY = velocityTracker.calculateVelocity().y
+                  val completed = latestHeroProgress >= 0.34f || velY < -750f
                   if (completed) {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                   }
-                  onSwipeUpDragEnd(completed)
+                  currentOnSwipeUpDragEnd(completed, velY)
                 }
                 return@awaitEachGesture
               }
 
               if (armed) {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onSplitArmChanged(true, 0f)
+                currentOnSplitArmChanged(true, 0f)
                 var latestDragX = 0f
                 while (true) {
                   val ev = awaitPointerEvent()
@@ -798,21 +850,21 @@ private fun MorphingFloatingPill(
                   if (ch == null || !ch.pressed) {
                     if (latestDragX > splitThresholdPx) {
                       haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                      onTriggerSplitGesture(true)
+                      currentOnTriggerSplitGesture(true)
                     } else if (latestDragX < -splitThresholdPx) {
                       haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                      onTriggerSplitGesture(false)
+                      currentOnTriggerSplitGesture(false)
                     }
                     break
                   }
                   ch.consume()
                   latestDragX = ch.position.x - downPos.x
-                  onSplitArmChanged(true, latestDragX)
+                  currentOnSplitArmChanged(true, latestDragX)
                 }
               }
             } finally {
               isHoldingIdle = false
-              onSplitArmChanged(false, 0f)
+              currentOnSplitArmChanged(false, 0f)
             }
           }
         }
@@ -829,15 +881,20 @@ private fun MorphingFloatingPill(
           val touchSlop = viewConfiguration.touchSlop
           val down = awaitFirstDown(requireUnconsumed = false)
           val downPos = down.position
+          val velocityTracker = VelocityTracker().apply {
+            addPosition(down.uptimeMillis, down.position)
+          }
           var trackingHeroFly = false
           var latestHeroProgress = 0f
           var collapseDone = false
-          val heroMaxPx = 150.dp.toPx().coerceAtLeast(120f)
+          val heroMaxPx = 180.dp.toPx().coerceAtLeast(140f)
           try {
             while (!collapseDone) {
               val ev = awaitPointerEvent()
               val ch = ev.changes.firstOrNull { it.id == down.id } ?: ev.changes.firstOrNull()
               if (ch == null || !ch.pressed) break
+              if (currentSplitHoldActive) break
+              velocityTracker.addPosition(ch.uptimeMillis, ch.position)
               if (ch.isConsumed && !trackingHeroFly) break
               val dx = ch.position.x - downPos.x
               val dy = ch.position.y - downPos.y
@@ -845,23 +902,24 @@ private fun MorphingFloatingPill(
                 trackingHeroFly = true
                 ch.consume()
                 latestHeroProgress = ((-dy) / heroMaxPx).coerceIn(0f, 1f)
-                onSwipeUpDragProgress(latestHeroProgress)
+                currentOnSwipeUpDragProgress(latestHeroProgress)
               } else if (!trackingHeroFly && dy > 48f && abs(dy) > abs(dx) * 1.4f) {
                 collapseDone = true
                 ch.consume()
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                onCollapseBar()
+                currentOnCollapseBar()
               }
             }
             if (trackingHeroFly) {
-              val completed = latestHeroProgress >= 0.36f
+              val velY = velocityTracker.calculateVelocity().y
+              val completed = latestHeroProgress >= 0.34f || velY < -750f
               if (completed) {
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
               }
-              onSwipeUpDragEnd(completed)
+              currentOnSwipeUpDragEnd(completed, velY)
             }
           } catch (t: Throwable) {
-            if (trackingHeroFly) onSwipeUpDragEnd(false)
+            if (trackingHeroFly) currentOnSwipeUpDragEnd(false, 0f)
             throw t
           }
         }
@@ -869,7 +927,9 @@ private fun MorphingFloatingPill(
     }
 
   val maxBarWidth = if (isSplitCompact) 520.dp else 720.dp
-  val widthFraction = designConfig.barWidthFraction.coerceIn(0.60f, 1.0f)
+  val widthFraction =
+    if (isSplitCompact) designConfig.barWidthFraction.coerceIn(0.88f, 1.0f)
+    else designConfig.barWidthFraction.coerceIn(0.60f, 1.0f)
 
   BoxWithConstraints(
     modifier = Modifier.widthIn(max = maxBarWidth).fillMaxWidth(widthFraction),
@@ -886,8 +946,8 @@ private fun MorphingFloatingPill(
       }
 
     val expandedWidth = maxWidth
-    val collapsedWidth = (if (isSplitCompact) 168.dp else 208.dp).coerceAtMost(expandedWidth)
-    val animatedWidth = androidx.compose.ui.unit.lerp(expandedWidth, collapsedWidth, collapseProgress)
+    val collapsedWidth = 156.dp.coerceAtMost(expandedWidth)
+    val animatedWidth = androidx.compose.ui.unit.lerp(expandedWidth, collapsedWidth, pillProgress)
 
     // 분할 모드에서는 각 창 크기에 맞춰 좌/우 커스텀 슬롯 수를 안전하게 축약
     val visibleLeftSlots =
@@ -905,13 +965,22 @@ private fun MorphingFloatingPill(
         toolbarConfig.rightSlots
       }
 
-    val expandedContentVisibility = (1f - collapseProgress * 1.8f).coerceIn(0f, 1f)
-    val collapsedContentVisibility = ((collapseProgress - 0.35f) / 0.65f).coerceIn(0f, 1f)
+    // 축소 시 0..0.60 구간에서 1 -> 0, 복원 시 0.35..1.0(역방향 progress 0.65..0)에서 열림
+    val restoreP = (1f - pillProgress).coerceIn(0f, 1f)
+    val flankLayoutFactor =
+      (if (isRestoringPill) {
+        ((restoreP - 0.18f) / 0.52f).coerceIn(0f, 1f)
+      } else {
+        (1f - pillProgress / 0.58f).coerceIn(0f, 1f)
+      }) * (1f - omniboxFocus)
+
+    val expandedDomainAlpha = (1f - ((pillProgress - 0.25f) / 0.45f)).coerceIn(0f, 1f)
+    val collapsedDomainAlpha = ((pillProgress - 0.40f) / 0.45f).coerceIn(0f, 1f)
     val isInternalPage =
       focusedTab == null || focusedTab.url == "about:mb" || focusedTab.url == "about:blank"
 
     val pillTestTag =
-      if (collapseProgress > 0.5f) {
+      if (pillProgress > 0.5f) {
         "collapsed_floating_pill"
       } else if (isSplitCompact) {
         "safari_floating_bar_pane_$paneIndex"
@@ -921,6 +990,7 @@ private fun MorphingFloatingPill(
 
     val collapsedInteraction = remember { MutableInteractionSource() }
     val collapsedPressScale = rememberPressScale(collapsedInteraction, 0.94f)
+    val barDissolve = (heroDragLiftProgress / 0.45f).coerceIn(0f, 1f)
 
     FrostedFloatingSurface(
       shape = outerShape,
@@ -930,16 +1000,20 @@ private fun MorphingFloatingPill(
       modifier =
         Modifier.size(width = animatedWidth, height = animatedHeight)
           .graphicsLayer {
-            translationY = -heroDragLiftProgress * 36.dp.toPx()
-            alpha = 1f - heroDragLiftProgress * 0.25f
-            if (collapseProgress > 0.5f) {
-              val s = collapsedPressScale.value
+            translationY = -barDissolve * 52.dp.toPx()
+            alpha = 1f - barDissolve
+            val dragScale = 1f - barDissolve * 0.08f
+            if (pillProgress > 0.5f) {
+              val s = collapsedPressScale.value * dragScale
               scaleX = s
               scaleY = s
+            } else {
+              scaleX = dragScale
+              scaleY = dragScale
             }
           }
           .then(
-            if (collapseProgress > 0.5f) {
+            if (pillProgress > 0.5f) {
               Modifier.clickable(
                 interactionSource = collapsedInteraction,
                 indication = androidx.compose.material3.ripple(bounded = true),
@@ -952,7 +1026,7 @@ private fun MorphingFloatingPill(
           .testTag(pillTestTag),
     ) {
       Box(modifier = Modifier.fillMaxSize()) {
-        if (focusedTab?.isLoading == true && collapseProgress < 0.5f) {
+        if (focusedTab?.isLoading == true && pillProgress < 0.5f) {
           LinearProgressIndicator(
             progress = { (focusedTab.progress / 100f).coerceIn(0.05f, 1f) },
             modifier =
@@ -979,75 +1053,97 @@ private fun MorphingFloatingPill(
           )
         }
 
-        // [확장 상태 레이아웃] (스크롤 축소 시 자연스럽게 scale & fade)
-        if (expandedContentVisibility > 0.02f) {
-          Row(
-            modifier =
-              Modifier.fillMaxSize()
-                .graphicsLayer { alpha = expandedContentVisibility }
-                .padding(horizontal = if (isSplitCompact) 6.dp else BrowserSpacing.Grid1),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-          ) {
-            // 1. [좌측 커스텀 아이콘 슬롯] - 스태거드 스케일 인 (0.8f -> 1f)
-            AnimatedVisibility(
-              visible = !isOmniboxFocused,
-              enter = fadeIn(BrowserMotion.morphingPillSpring()),
-              exit = fadeOut(BrowserMotion.snappySpring()),
+        // 단일 Row 내부에서 좌/우 슬롯이 중앙 캡슐 아래(zIndex 1f)로 수축·복원
+        Row(
+          modifier =
+            Modifier.fillMaxSize()
+              .padding(horizontal = if (isSplitCompact || pillProgress > 0.5f) 4.dp else BrowserSpacing.Grid1),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+          // 1. [좌측 커스텀 아이콘 슬롯] - 시차적 안쪽 수축 / 오버슈트 확장
+          if (flankLayoutFactor > 0.005f && visibleLeftSlots.isNotEmpty()) {
+            Row(
+              modifier =
+                Modifier.zIndex(1f)
+                  .layout { measurable, constraints ->
+                    val placeable = measurable.measure(constraints.copy(minWidth = 0))
+                    val occupiedW = (placeable.width * flankLayoutFactor).toInt().coerceAtLeast(0)
+                    layout(occupiedW, placeable.height) {
+                      placeable.placeRelative(0, 0)
+                    }
+                  },
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-              Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-              ) {
-                visibleLeftSlots.forEachIndexed { idx, action ->
-                  val stagger = (1f - collapseProgress * (1.35f + idx * 0.2f)).coerceIn(0f, 1f)
-                  val iconScale = 0.8f + 0.2f * stagger
-                  Box(
-                    modifier =
-                      Modifier.graphicsLayer {
-                        scaleX = iconScale
-                        scaleY = iconScale
-                        alpha = stagger
-                      }
-                  ) {
-                    CustomToolbarSlotButton(
-                      action = action,
-                      focusedTab = focusedTab,
-                      tabCount = tabCount,
-                      splitMode = splitMode,
-                      isBookmarked = isBookmarked,
-                      isDesktopMode = isDesktopMode,
-                      supportsDualPane = supportsDualPane,
-                      buttonSize = buttonSize,
-                      designConfig = designConfig,
-                      onClick = { onExecuteAction(action) },
-                    )
-                  }
+              visibleLeftSlots.forEachIndexed { idx, action ->
+                val motion =
+                  computeFlankSlotMotion(
+                    pillProgress = pillProgress,
+                    isRestoringPill = isRestoringPill,
+                    omniboxFocus = omniboxFocus,
+                    slotIndex = idx,
+                    isLeft = true,
+                  )
+                Box(
+                  modifier =
+                    Modifier.graphicsLayer {
+                      translationX = motion.translationXFactor * 26.dp.toPx()
+                      scaleX = motion.scale
+                      scaleY = motion.scale
+                      alpha = motion.alpha
+                    }
+                ) {
+                  CustomToolbarSlotButton(
+                    action = action,
+                    focusedTab = focusedTab,
+                    tabCount = tabCount,
+                    splitMode = splitMode,
+                    isBookmarked = isBookmarked,
+                    isDesktopMode = isDesktopMode,
+                    supportsDualPane = supportsDualPane,
+                    buttonSize = buttonSize,
+                    designConfig = designConfig,
+                    onClick = { onExecuteAction(action) },
+                  )
                 }
               }
             }
+          }
 
-            // 2. [중앙 통합 주소창] - 무테두리 반투명 인셋 캡슐
-            Surface(
-              shape = innerShape,
-              color =
-                MaterialTheme.colorScheme.surfaceVariant.copy(
-                  alpha =
-                    if (floatingBarStyle == FloatingBarStyle.TRANSLUCENT_GLASS) 0.58f else 0.86f
-                ),
-              border =
-                if (holdProgressAnim.value > 0.05f) {
-                  androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                } else {
-                  null
-                },
-              modifier =
-                Modifier.weight(1f)
-                  .height(omniboxHeight)
-                  .testTag(if (isSplitCompact) "omnibox_trigger_$paneIndex" else "omnibox_trigger")
-                  .clip(innerShape)
-                  .then(omniboxGestureModifier),
-            ) {
+          // 2. [중앙 통합 주소창 <-> 컴팩트 마이크로 알약] (zIndex 2f로 양측 슬롯 위 레이어)
+          val capsuleAlpha =
+            if (isOmniboxFocused) {
+              0.78f
+            } else {
+              val expandedCapAlpha = if (floatingBarStyle == FloatingBarStyle.TRANSLUCENT_GLASS) 0.58f else 0.86f
+              expandedCapAlpha * (1f - pillProgress)
+            }
+          val omniboxShape =
+            androidx.compose.foundation.shape.RoundedCornerShape(
+              androidx.compose.ui.unit.lerp(
+                (designConfig.barCornerRadiusDp - 4f).coerceIn(0f, 36f).dp,
+                15.dp,
+                pillProgress,
+              )
+            )
+          Surface(
+            shape = omniboxShape,
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = capsuleAlpha.coerceIn(0f, 1f)),
+            border =
+              if (holdProgressAnim.value > 0.05f) {
+                androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+              } else {
+                null
+              },
+            modifier =
+              Modifier.weight(1f)
+                .zIndex(2f)
+                .height(omniboxHeight)
+                .testTag(if (isSplitCompact) "omnibox_trigger_$paneIndex" else "omnibox_trigger")
+                .clip(omniboxShape)
+                .then(omniboxGestureModifier),
+          ) {
               if (isOmniboxFocused) {
                 Row(
                   modifier = Modifier.fillMaxSize().padding(horizontal = BrowserSpacing.Grid1_5),
@@ -1095,6 +1191,7 @@ private fun MorphingFloatingPill(
                   if (omniboxQuery.isNotEmpty()) {
                     SpringIconButton(
                       onClick = { onOmniboxQueryChange("") },
+                      shape = innerShape,
                       modifier = Modifier.size(30.dp),
                     ) {
                       Icon(
@@ -1106,6 +1203,7 @@ private fun MorphingFloatingPill(
                   }
                   SpringIconButton(
                     onClick = { onOmniboxSubmit(omniboxQuery) },
+                    shape = innerShape,
                     modifier = Modifier.size(32.dp).testTag("omnibox_submit_button"),
                   ) {
                     Icon(
@@ -1117,6 +1215,7 @@ private fun MorphingFloatingPill(
                   }
                   SpringIconButton(
                     onClick = onBlurOmnibox,
+                    shape = innerShape,
                     modifier = Modifier.size(30.dp).testTag("omnibox_close_button"),
                   ) {
                     Icon(
@@ -1127,80 +1226,120 @@ private fun MorphingFloatingPill(
                   }
                 }
               } else {
-                Row(
-                  modifier =
-                    Modifier.fillMaxSize()
-                      .padding(horizontal = if (isSplitCompact) 8.dp else BrowserSpacing.Grid1_5),
-                  verticalAlignment = Alignment.CenterVertically,
-                  horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                  if (splitMode) {
-                    Surface(
-                      shape = designConfig.cardInnerShape(),
-                      color =
-                        if (isPaneFocused) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surface,
+                Box(modifier = Modifier.fillMaxSize()) {
+                  // 확장 상태 중앙 주소창 콘텐츠
+                  if (expandedDomainAlpha > 0.01f) {
+                    Row(
+                      modifier =
+                        Modifier.fillMaxSize()
+                          .graphicsLayer { alpha = expandedDomainAlpha }
+                          .padding(horizontal = if (isSplitCompact) 8.dp else BrowserSpacing.Grid1_5),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
+                      if (splitMode) {
+                        Surface(
+                          shape = innerShape,
+                          color =
+                            if (isPaneFocused) MaterialTheme.colorScheme.primaryContainer
+                            else MaterialTheme.colorScheme.surface,
+                        ) {
+                          Text(
+                            text = "P${(if (isSplitCompact) paneIndex else activePane) + 1}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color =
+                              if (isPaneFocused) MaterialTheme.colorScheme.primary
+                              else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                          )
+                        }
+                      }
+
+                      Icon(
+                        imageVector =
+                          when {
+                            isInternalPage -> Icons.Outlined.Shield
+                            focusedTab?.isSecure == true -> Icons.Outlined.Lock
+                            else -> Icons.Outlined.Public
+                          },
+                        contentDescription = "보안 상태",
+                        tint =
+                          if (focusedTab?.isSecure == true) MaterialTheme.colorScheme.secondary
+                          else MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(15.dp),
+                      )
+
                       Text(
-                        text = "P${(if (isSplitCompact) paneIndex else activePane) + 1}",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = if (isInternalPage) "검색 또는 주소 입력" else focusedTab!!.displayHost,
+                        style = MaterialTheme.typography.labelMedium,
                         color =
-                          if (isPaneFocused) MaterialTheme.colorScheme.primary
-                          else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                          if (isInternalPage) MaterialTheme.colorScheme.onSurfaceVariant
+                          else MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                       )
+
+                      if ((focusedTab?.blockedCount ?: 0) > 0 && !isSplitCompact) {
+                        Surface(
+                          shape = innerShape,
+                          color = MaterialTheme.colorScheme.secondaryContainer,
+                        ) {
+                          Text(
+                            text = "${focusedTab?.blockedCount}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                          )
+                        }
+                      }
+
+                      if (!isInternalPage) {
+                        SpringIconButton(
+                          onClick = onReloadOrStop,
+                          shape = innerShape,
+                          modifier = Modifier.size(30.dp).testTag("reload_button"),
+                        ) {
+                          Icon(
+                            imageVector =
+                              if (focusedTab!!.isLoading) Icons.Outlined.Close else Icons.Outlined.Refresh,
+                            contentDescription = if (focusedTab.isLoading) "중지" else "새로고침",
+                            modifier = Modifier.size(16.dp),
+                          )
+                        }
+                      }
                     }
                   }
 
-                  Icon(
-                    imageVector =
-                      when {
-                        isInternalPage -> Icons.Outlined.Shield
-                        focusedTab?.isSecure == true -> Icons.Outlined.Lock
-                        else -> Icons.Outlined.Public
-                      },
-                    contentDescription = "보안 상태",
-                    tint =
-                      if (focusedTab?.isSecure == true) MaterialTheme.colorScheme.secondary
-                      else MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(15.dp),
-                  )
-
-                  Text(
-                    text = if (isInternalPage) "검색 또는 주소 입력" else focusedTab!!.displayHost,
-                    style = MaterialTheme.typography.labelMedium,
-                    color =
-                      if (isInternalPage) MaterialTheme.colorScheme.onSurfaceVariant
-                      else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                  )
-
-                  if ((focusedTab?.blockedCount ?: 0) > 0 && !isSplitCompact) {
-                    Surface(
-                      shape = designConfig.cardInnerShape(),
-                      color = MaterialTheme.colorScheme.secondaryContainer,
-                    ) {
-                      Text(
-                        text = "${focusedTab?.blockedCount}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                      )
-                    }
-                  }
-
-                  if (!isInternalPage) {
-                    SpringIconButton(
-                      onClick = onReloadOrStop,
-                      modifier = Modifier.size(30.dp).testTag("reload_button"),
+                  // 축소 상태 컴팩트 마이크로 알약 콘텐츠 (도메인 + 보안 아이콘)
+                  if (collapsedDomainAlpha > 0.01f) {
+                    Row(
+                      modifier =
+                        Modifier.fillMaxSize()
+                          .graphicsLayer {
+                            alpha = collapsedDomainAlpha
+                            val s = 0.88f + 0.12f * collapsedDomainAlpha
+                            scaleX = s
+                            scaleY = s
+                          }
+                          .padding(horizontal = BrowserSpacing.Grid1_5),
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.Center,
                     ) {
                       Icon(
                         imageVector =
-                          if (focusedTab!!.isLoading) Icons.Outlined.Close else Icons.Outlined.Refresh,
-                        contentDescription = if (focusedTab.isLoading) "중지" else "새로고침",
-                        modifier = Modifier.size(16.dp),
+                          if (focusedTab?.isSecure == true) Icons.Outlined.Lock else Icons.Outlined.Shield,
+                        contentDescription = "보안 상태",
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(14.dp),
+                      )
+                      androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
+                      Text(
+                        text = if (isInternalPage) "MyBrowser(MB)" else focusedTab!!.displayHost,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                       )
                     }
                   }
@@ -1209,24 +1348,36 @@ private fun MorphingFloatingPill(
             }
 
             // 3. [우측 커스텀 아이콘 슬롯] + [분할 시 창 합치기] + 4. [최우측 설정 아이콘 고정]
-            AnimatedVisibility(
-              visible = !isOmniboxFocused,
-              enter = fadeIn(BrowserMotion.morphingPillSpring()),
-              exit = fadeOut(BrowserMotion.snappySpring()),
-            ) {
+            if (flankLayoutFactor > 0.005f) {
               Row(
+                modifier =
+                  Modifier.zIndex(1f)
+                    .layout { measurable, constraints ->
+                      val placeable = measurable.measure(constraints.copy(minWidth = 0))
+                      val occupiedW = (placeable.width * flankLayoutFactor).toInt().coerceAtLeast(0)
+                      layout(occupiedW, placeable.height) {
+                        placeable.placeRelative(0, 0)
+                      }
+                    },
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(2.dp),
               ) {
                 visibleRightSlots.forEachIndexed { idx, action ->
-                  val stagger = (1f - collapseProgress * (1.35f + idx * 0.2f)).coerceIn(0f, 1f)
-                  val iconScale = 0.8f + 0.2f * stagger
+                  val motion =
+                    computeFlankSlotMotion(
+                      pillProgress = pillProgress,
+                      isRestoringPill = isRestoringPill,
+                      omniboxFocus = omniboxFocus,
+                      slotIndex = idx,
+                      isLeft = false,
+                    )
                   Box(
                     modifier =
                       Modifier.graphicsLayer {
-                        scaleX = iconScale
-                        scaleY = iconScale
-                        alpha = stagger
+                        translationX = motion.translationXFactor * 26.dp.toPx()
+                        scaleX = motion.scale
+                        scaleY = motion.scale
+                        alpha = motion.alpha
                       }
                   ) {
                     CustomToolbarSlotButton(
@@ -1245,31 +1396,58 @@ private fun MorphingFloatingPill(
                 }
 
                 if (isSplitCompact) {
-                  SpringIconButton(
-                    onClick = onCloseSplitPane,
-                    modifier = Modifier.size(buttonSize).testTag("merge_split_button_$paneIndex"),
-                  ) {
-                    Icon(
-                      imageVector = Icons.Outlined.FullscreenExit,
-                      contentDescription = "창 합치기",
-                      tint = MaterialTheme.colorScheme.primary,
-                      modifier = Modifier.size(18.dp),
+                  val mergeMotion =
+                    computeFlankSlotMotion(
+                      pillProgress = pillProgress,
+                      isRestoringPill = isRestoringPill,
+                      omniboxFocus = omniboxFocus,
+                      slotIndex = visibleRightSlots.size,
+                      isLeft = false,
                     )
+                  Box(
+                    modifier =
+                      Modifier.graphicsLayer {
+                        translationX = mergeMotion.translationXFactor * 26.dp.toPx()
+                        scaleX = mergeMotion.scale
+                        scaleY = mergeMotion.scale
+                        alpha = mergeMotion.alpha
+                      }
+                  ) {
+                    SpringIconButton(
+                      onClick = onCloseSplitPane,
+                      shape = innerShape,
+                      modifier = Modifier.size(buttonSize).testTag("merge_split_button_$paneIndex"),
+                    ) {
+                      Icon(
+                        imageVector = Icons.Outlined.FullscreenExit,
+                        contentDescription = "창 합치기",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                      )
+                    }
                   }
                 }
 
-                val settingsStagger = (1f - collapseProgress * 1.5f).coerceIn(0f, 1f)
-                val settingsScale = 0.8f + 0.2f * settingsStagger
+                val settingsMotion =
+                  computeFlankSlotMotion(
+                    pillProgress = pillProgress,
+                    isRestoringPill = isRestoringPill,
+                    omniboxFocus = omniboxFocus,
+                    slotIndex = visibleRightSlots.size + if (isSplitCompact) 1 else 0,
+                    isLeft = false,
+                  )
                 Box(
                   modifier =
                     Modifier.graphicsLayer {
-                      scaleX = settingsScale
-                      scaleY = settingsScale
-                      alpha = settingsStagger
+                      translationX = settingsMotion.translationXFactor * 28.dp.toPx()
+                      scaleX = settingsMotion.scale
+                      scaleY = settingsMotion.scale
+                      alpha = settingsMotion.alpha
                     }
                 ) {
                   SpringIconButton(
                     onClick = onOpenSettings,
+                    shape = innerShape,
                     modifier = Modifier.size(buttonSize).testTag("fixed_settings_button"),
                   ) {
                     Icon(
@@ -1282,44 +1460,57 @@ private fun MorphingFloatingPill(
                 }
               }
             }
-          }
-        }
-
-        // [스크롤 축소 상태 마이크로 알약 컨텐츠] (도메인 + 보안 아이콘)
-        if (collapsedContentVisibility > 0.02f) {
-          Row(
-            modifier =
-              Modifier.fillMaxSize()
-                .graphicsLayer {
-                  alpha = collapsedContentVisibility
-                  val s = 0.86f + 0.14f * collapsedContentVisibility
-                  scaleX = s
-                  scaleY = s
-                }
-                .padding(horizontal = BrowserSpacing.Grid2),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center,
-          ) {
-            Icon(
-              imageVector =
-                if (focusedTab?.isSecure == true) Icons.Outlined.Lock else Icons.Outlined.Shield,
-              contentDescription = "보안 상태",
-              tint = MaterialTheme.colorScheme.secondary,
-              modifier = Modifier.size(15.dp),
-            )
-            androidx.compose.foundation.layout.Spacer(Modifier.size(6.dp))
-            Text(
-              text = if (isInternalPage) "MyBrowser(MB)" else focusedTab!!.displayHost,
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.onSurface,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
         }
       }
     }
   }
+}
+
+private data class FlankSlotMotion(
+  val translationXFactor: Float,
+  val scale: Float,
+  val alpha: Float,
+)
+
+private fun computeFlankSlotMotion(
+  pillProgress: Float,
+  isRestoringPill: Boolean,
+  omniboxFocus: Float,
+  slotIndex: Int,
+  isLeft: Boolean,
+): FlankSlotMotion {
+  val p = pillProgress.coerceIn(0f, 1f)
+  val focusFade = (1f - omniboxFocus).coerceIn(0f, 1f)
+  val inwardSign = if (isLeft) 1f else -1f
+
+  if (!isRestoringPill) {
+    // Collapsing (0f -> 1f): icons slide inward toward Omnibox, scale 1f -> 0.4f, fade 1f -> 0f during 0f..0.6f
+    val start = (slotIndex * 0.05f).coerceIn(0f, 0.25f)
+    val end = (0.48f + slotIndex * 0.04f).coerceIn(0.45f, 0.60f)
+    val t = ((p - start) / (end - start).coerceAtLeast(0.01f)).coerceIn(0f, 1f)
+    return FlankSlotMotion(
+      translationXFactor = inwardSign * t,
+      scale = (1f - t * 0.6f) * (1f - omniboxFocus * 0.35f),
+      alpha = (1f - t) * focusFade,
+    )
+  }
+
+  // Restoring (1f -> 0f): pill expands first (0f..0.5f), icons pop out sequentially with subtle overshoot 0.5f -> 1.06f -> 1.0f during 0.35f..1.0f
+  val restoreP = (1f - p).coerceIn(0f, 1f)
+  val start = (0.35f + slotIndex * 0.06f).coerceIn(0.35f, 0.60f)
+  val end = (start + 0.40f).coerceAtMost(1.0f)
+  val popT = ((restoreP - start) / (end - start).coerceAtLeast(0.01f)).coerceIn(0f, 1f)
+  val overshootScale =
+    if (popT < 0.72f) {
+      0.50f + (1.06f - 0.50f) * (popT / 0.72f)
+    } else {
+      1.06f - (1.06f - 1.00f) * ((popT - 0.72f) / 0.28f)
+    }
+  return FlankSlotMotion(
+    translationXFactor = inwardSign * (1f - popT),
+    scale = overshootScale * (1f - omniboxFocus * 0.35f),
+    alpha = (popT * 1.35f).coerceIn(0f, 1f) * focusFade,
+  )
 }
 
 @Composable
@@ -1354,10 +1545,11 @@ private fun CustomToolbarSlotButton(
   if (action == ToolbarActionId.TABS) {
     SpringIconButton(
       onClick = onClick,
+      shape = designConfig.barInnerShape(),
       modifier = Modifier.size(buttonSize).testTag(tag),
     ) {
       Surface(
-        shape = designConfig.iconShape(),
+        shape = designConfig.barInnerShape(),
         color = MaterialTheme.colorScheme.surfaceVariant,
         border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.onSurface),
       ) {
@@ -1406,6 +1598,7 @@ private fun CustomToolbarSlotButton(
   SpringIconButton(
     onClick = onClick,
     enabled = enabled,
+    shape = designConfig.barInnerShape(),
     modifier = Modifier.size(buttonSize).testTag(tag),
   ) {
     Icon(
@@ -1476,13 +1669,14 @@ private fun FindInPageFloatingPill(
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
-      SpringIconButton(onClick = onPrev, enabled = totalMatches > 0, modifier = Modifier.size(36.dp)) {
+      val findInnerShape = designConfig.barInnerShape()
+      SpringIconButton(onClick = onPrev, enabled = totalMatches > 0, shape = findInnerShape, modifier = Modifier.size(36.dp)) {
         Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "이전 결과")
       }
-      SpringIconButton(onClick = onNext, enabled = totalMatches > 0, modifier = Modifier.size(36.dp)) {
+      SpringIconButton(onClick = onNext, enabled = totalMatches > 0, shape = findInnerShape, modifier = Modifier.size(36.dp)) {
         Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "다음 결과")
       }
-      SpringIconButton(onClick = onClose, modifier = Modifier.size(36.dp)) {
+      SpringIconButton(onClick = onClose, shape = findInnerShape, modifier = Modifier.size(36.dp)) {
         Icon(Icons.Outlined.Close, contentDescription = "닫기")
       }
     }

@@ -150,12 +150,12 @@ class TabStateMachineImpl : TabStateMachineContract {
       primaryTabId = candidate.id
       candidate.lastActiveAtMs = System.currentTimeMillis()
     }
-    if (secondaryTabId == tabId) {
+    if (secondaryTabId == tabId || secondaryTabId == primaryTabId || tabs.none { it.id == secondaryTabId }) {
       secondaryTabId = tabs.firstOrNull { it.id != primaryTabId }?.id
-      if (secondaryTabId == null) {
-        splitMode = false
-        activePane = 0
-      }
+    }
+    if (secondaryTabId == null) {
+      splitMode = false
+      activePane = 0
     }
     serializeStateJsonLocked()
   }
@@ -361,7 +361,7 @@ class TabStateMachineImpl : TabStateMachineContract {
           FolderRecord(
             id = newFolderId,
             name = resolvedName,
-            colorIndex = folders.size % 5,
+            colorIndex = folders.size % 6,
             isExpanded = true,
           )
         newFolderId

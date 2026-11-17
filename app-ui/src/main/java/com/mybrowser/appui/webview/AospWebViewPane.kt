@@ -106,6 +106,7 @@ class AospWebViewPool(
     ConcurrentHashMap<String, (ExternalAppLaunchRequest) -> Unit>()
   private val downloadCallbacks =
     ConcurrentHashMap<String, (PendingDownloadRequest) -> Unit>()
+  private val iconCallbacks = ConcurrentHashMap<String, (Bitmap?) -> Unit>()
   private val pausedTabs = ConcurrentHashMap.newKeySet<String>()
 
   @SuppressLint("SetJavaScriptEnabled")
@@ -119,11 +120,13 @@ class AospWebViewPool(
     onPermissionChallenge: (WebSitePermissionChallenge) -> Unit,
     onExternalAppRequest: (ExternalAppLaunchRequest) -> Unit = {},
     onDownloadRequest: (PendingDownloadRequest) -> Unit = {},
+    onIconUpdate: (Bitmap?) -> Unit = {},
   ): WebView {
     scrollListeners[tabId] = onScrollDelta
     permissionCallbacks[tabId] = onPermissionChallenge
     externalAppCallbacks[tabId] = onExternalAppRequest
     downloadCallbacks[tabId] = onDownloadRequest
+    iconCallbacks[tabId] = onIconUpdate
 
     val existing = webViews[tabId]
     if (existing != null) {
@@ -136,7 +139,8 @@ class AospWebViewPool(
             prev?.blockImages != renderPolicy.blockImages
         applyRenderPolicy(existing, renderPolicy)
         appliedPolicies[tabId] = renderPolicy
-        if (needsReload && !existing.url.isNullOrBlank()) {
+        val isInternal = lastLoadedUrl[tabId]?.startsWith("about:") == true
+        if (needsReload && !existing.url.isNullOrBlank() && !isInternal) {
           existing.reload()
         }
       }
@@ -238,6 +242,9 @@ class AospWebViewPool(
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
               val safeUrl = url ?: return
+              if (lastLoadedUrl[tabId]?.startsWith("about:") == true && !safeUrl.startsWith("about:")) {
+                return
+              }
               lastLoadedUrl[tabId] = safeUrl
               onNavigationUpdate(
                 safeUrl,
@@ -253,6 +260,9 @@ class AospWebViewPool(
 
             override fun onPageFinished(view: WebView?, url: String?) {
               val safeUrl = url ?: lastLoadedUrl[tabId] ?: ""
+              if (lastLoadedUrl[tabId]?.startsWith("about:") == true && !safeUrl.startsWith("about:")) {
+                return
+              }
               if (safeUrl.isNotBlank()) lastLoadedUrl[tabId] = safeUrl
               val policy = appliedPolicies[tabId] ?: renderPolicy
               if (policy.forceWebDark && Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
@@ -277,6 +287,7 @@ class AospWebViewPool(
         webChromeClient =
           object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
+              if (lastLoadedUrl[tabId]?.startsWith("about:") == true) return
               val safeUrl = view?.url ?: lastLoadedUrl[tabId] ?: ""
               if (safeUrl.isBlank() || safeUrl == "about:blank") return
               onNavigationUpdate(
@@ -292,6 +303,7 @@ class AospWebViewPool(
             }
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
+              if (lastLoadedUrl[tabId]?.startsWith("about:") == true) return
               val safeUrl = view?.url ?: lastLoadedUrl[tabId] ?: ""
               if (safeUrl.isBlank() || safeUrl == "about:blank") return
               onNavigationUpdate(
@@ -304,6 +316,11 @@ class AospWebViewPool(
                   canGoForward = view?.canGoForward() == true,
                 ),
               )
+            }
+
+            override fun onReceivedIcon(view: WebView?, icon: Bitmap?) {
+              if (lastLoadedUrl[tabId]?.startsWith("about:") == true) return
+              iconCallbacks[tabId]?.invoke(icon)
             }
 
             override fun onPermissionRequest(request: PermissionRequest?) {
@@ -398,16 +415,29 @@ class AospWebViewPool(
     }
   }
 
+  fun markInternalPage(tabId: String, internalUrl: String) {
+    lastLoadedUrl[tabId] = internalUrl
+    webViews[tabId]?.stopLoading()
+  }
+
   fun loadUrl(tabId: String, url: String, sendDntGpc: Boolean = true) {
     if (url == "about:mb" || url == "about:blank") {
-      lastLoadedUrl[tabId] = url
+      markInternalPage(tabId, url)
       return
     }
     lastLoadedUrl[tabId] = url
     webViews[tabId]?.let { wv ->
-      if (wv.url != url) {
-        loadWithHeaders(wv, url, sendDntGpc)
-      }
+      loadWithHeaders(wv, url, sendDntGpc)
+    }
+  }
+
+  fun syncTargetUrlIfNeeded(tabId: String, targetUrl: String, sendDntGpc: Boolean = true) {
+    if (targetUrl == "about:mb" || targetUrl == "about:blank") return
+    val prevLast = lastLoadedUrl[tabId]
+    val wv = webViews[tabId] ?: return
+    if ((wv.url.isNullOrBlank() && prevLast != targetUrl) || prevLast?.startsWith("about:") == true) {
+      lastLoadedUrl[tabId] = targetUrl
+      loadWithHeaders(wv, targetUrl, sendDntGpc)
     }
   }
 
@@ -419,6 +449,25 @@ class AospWebViewPool(
     return try {
       val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
       val canvas = Canvas(bmp)
+      wv.draw(canvas)
+      bmp
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  fun captureTabThumbnailBitmap(tabId: String, maxWidthPx: Int = 420): Bitmap? {
+    val wv = webViews[tabId] ?: return null
+    val w = wv.width
+    val h = wv.height
+    if (w <= 0 || h <= 0) return null
+    return try {
+      val scale = (maxWidthPx.toFloat() / w.toFloat()).coerceIn(0.1f, 1f)
+      val outW = (w * scale).toInt().coerceAtLeast(1)
+      val outH = (h * scale).toInt().coerceAtLeast(1)
+      val bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.RGB_565)
+      val canvas = Canvas(bmp)
+      canvas.scale(scale, scale)
       wv.draw(canvas)
       bmp
     } catch (_: Throwable) {
@@ -473,7 +522,10 @@ class AospWebViewPool(
   }
 
   fun clearFindInPage(tabId: String) {
-    webViews[tabId]?.clearMatches()
+    webViews[tabId]?.let { wv ->
+      wv.clearMatches()
+      wv.setFindListener(null)
+    }
   }
 
   fun clearBrowsingData(clearCache: Boolean, clearCookies: Boolean) {
@@ -500,7 +552,7 @@ class AospWebViewPool(
       """
       (function() {
         var root = document.querySelector('article') || document.querySelector('main') || document.body;
-        if (!root) return JSON.stringify({title: document.title || '', text: ''});
+        if (!root) return JSON.stringify({title: document.title || '', blocks: []});
         var nodes = root.querySelectorAll('h1,h2,h3,p,li,blockquote');
         var blocks = [];
         for (var i = 0; i < nodes.length && blocks.length < 80; i++) {
@@ -579,6 +631,7 @@ class AospWebViewPool(
     permissionCallbacks.remove(tabId)
     externalAppCallbacks.remove(tabId)
     downloadCallbacks.remove(tabId)
+    iconCallbacks.remove(tabId)
     pausedTabs.remove(tabId)
     webViews.remove(tabId)?.let { wv ->
       (wv.parent as? ViewGroup)?.removeView(wv)
@@ -604,6 +657,7 @@ fun AospWebViewViewport(
   onPermissionChallenge: (WebSitePermissionChallenge) -> Unit,
   onExternalAppRequest: (ExternalAppLaunchRequest) -> Unit,
   onDownloadRequest: (PendingDownloadRequest) -> Unit,
+  onIconUpdate: (Bitmap?) -> Unit = {},
   modifier: Modifier = Modifier,
 ) {
   Box(modifier = modifier) {
@@ -622,14 +676,13 @@ fun AospWebViewViewport(
               onPermissionChallenge = onPermissionChallenge,
               onExternalAppRequest = onExternalAppRequest,
               onDownloadRequest = onDownloadRequest,
+              onIconUpdate = onIconUpdate,
             )
           (wv.parent as? ViewGroup)?.removeView(wv)
           if (targetUrl != "about:mb" && targetUrl != "about:blank" && wv.url.isNullOrBlank()) {
-            if (renderPolicy.sendDntGpcHeaders) {
-              wv.loadUrl(targetUrl, mapOf("DNT" to "1", "Sec-GPC" to "1"))
-            } else {
-              wv.loadUrl(targetUrl)
-            }
+            webViewPool.loadUrl(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
+          } else {
+            webViewPool.syncTargetUrlIfNeeded(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
           }
           wv
         },
@@ -644,14 +697,9 @@ fun AospWebViewViewport(
             onPermissionChallenge = onPermissionChallenge,
             onExternalAppRequest = onExternalAppRequest,
             onDownloadRequest = onDownloadRequest,
+            onIconUpdate = onIconUpdate,
           )
-          if (targetUrl != "about:mb" && targetUrl != "about:blank" && wv.url.isNullOrBlank()) {
-            if (renderPolicy.sendDntGpcHeaders) {
-              wv.loadUrl(targetUrl, mapOf("DNT" to "1", "Sec-GPC" to "1"))
-            } else {
-              wv.loadUrl(targetUrl)
-            }
-          }
+          webViewPool.syncTargetUrlIfNeeded(tabId, targetUrl, renderPolicy.sendDntGpcHeaders)
         },
       )
     }

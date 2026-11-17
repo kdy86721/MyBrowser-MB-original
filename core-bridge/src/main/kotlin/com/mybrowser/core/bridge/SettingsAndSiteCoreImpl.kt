@@ -20,12 +20,14 @@ class SettingsStoreImpl : SettingsStoreContract {
   private var webFontZoomPercent: Int = 100 // 75..200
   private var forceWebDark: Boolean = false
   private var hideStatusBar: Boolean = false
-  private var autoDualPaneUnfold: Boolean = true
+  private var autoDualPaneUnfold: Boolean = false
   private var splitGestureEnabled: Boolean = true
   private var splitGestureSensitivity: String = "MEDIUM"
   private var swipeUpOpenTabs: Boolean = true
   private var tabSwipeToCloseEnabled: Boolean = true
   private var tabDragFolderEnabled: Boolean = true
+  private var tabViewMode: String = "THUMBNAIL_GRID" // THUMBNAIL_GRID | COMPACT_LIST
+  private var defaultTabSortMode: String = "RECENT" // RECENT | CREATED | DOMAIN | FOLDERS_FIRST | PINNED_FIRST
   private var searchEngineId: String = "ddg"
   private var customSearchUrl: String = "https://www.mojeek.com/search?q=%s"
   private var trackerBlockingEnabled: Boolean = true
@@ -71,6 +73,8 @@ class SettingsStoreImpl : SettingsStoreContract {
     extractBoolean(rawJson, "swipeUpOpenTabs")?.let { swipeUpOpenTabs = it }
     extractBoolean(rawJson, "tabSwipeToCloseEnabled")?.let { tabSwipeToCloseEnabled = it }
     extractBoolean(rawJson, "tabDragFolderEnabled")?.let { tabDragFolderEnabled = it }
+    extractString(rawJson, "tabViewMode")?.let { applyKeyValueLocked("tabViewMode", it) }
+    extractString(rawJson, "defaultTabSortMode")?.let { applyKeyValueLocked("defaultTabSortMode", it) }
     extractString(rawJson, "searchEngineId")?.let { searchEngineId = it }
     extractString(rawJson, "customSearchUrl")?.let { customSearchUrl = it }
     extractBoolean(rawJson, "trackerBlockingEnabled")?.let { trackerBlockingEnabled = it }
@@ -98,12 +102,14 @@ class SettingsStoreImpl : SettingsStoreContract {
     webFontZoomPercent = 100
     forceWebDark = false
     hideStatusBar = false
-    autoDualPaneUnfold = true
+    autoDualPaneUnfold = false
     splitGestureEnabled = true
     splitGestureSensitivity = "MEDIUM"
     swipeUpOpenTabs = true
     tabSwipeToCloseEnabled = true
     tabDragFolderEnabled = true
+    tabViewMode = "THUMBNAIL_GRID"
+    defaultTabSortMode = "RECENT"
     searchEngineId = "ddg"
     customSearchUrl = "https://www.mojeek.com/search?q=%s"
     trackerBlockingEnabled = true
@@ -152,6 +158,14 @@ class SettingsStoreImpl : SettingsStoreContract {
       "swipeUpOpenTabs" -> value.toBooleanStrictOrNull()?.let { swipeUpOpenTabs = it }
       "tabSwipeToCloseEnabled" -> value.toBooleanStrictOrNull()?.let { tabSwipeToCloseEnabled = it }
       "tabDragFolderEnabled" -> value.toBooleanStrictOrNull()?.let { tabDragFolderEnabled = it }
+      "tabViewMode" ->
+        if (value.uppercase() in setOf("THUMBNAIL_GRID", "COMPACT_LIST")) {
+          tabViewMode = value.uppercase()
+        }
+      "defaultTabSortMode" ->
+        if (value.uppercase() in setOf("RECENT", "CREATED", "DOMAIN", "FOLDERS_FIRST", "PINNED_FIRST")) {
+          defaultTabSortMode = value.uppercase()
+        }
       "searchEngineId" -> if (value.isNotBlank()) searchEngineId = value
       "customSearchUrl" -> customSearchUrl = value.trim()
       "trackerBlockingEnabled" ->
@@ -176,7 +190,7 @@ class SettingsStoreImpl : SettingsStoreContract {
   }
 
   private fun serializeLocked(): String {
-    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
+    return """{"themeMode":${JsonMini.quote(themeMode)},"accentPreset":${JsonMini.quote(accentPreset)},"dynamicColor":$dynamicColor,"floatingBarStyle":${JsonMini.quote(floatingBarStyle)},"autoHideSensitivity":${JsonMini.quote(autoHideSensitivity)},"webFontZoomPercent":$webFontZoomPercent,"forceWebDark":$forceWebDark,"hideStatusBar":$hideStatusBar,"autoDualPaneUnfold":$autoDualPaneUnfold,"splitGestureEnabled":$splitGestureEnabled,"splitGestureSensitivity":${JsonMini.quote(splitGestureSensitivity)},"swipeUpOpenTabs":$swipeUpOpenTabs,"tabSwipeToCloseEnabled":$tabSwipeToCloseEnabled,"tabDragFolderEnabled":$tabDragFolderEnabled,"tabViewMode":${JsonMini.quote(tabViewMode)},"defaultTabSortMode":${JsonMini.quote(defaultTabSortMode)},"searchEngineId":${JsonMini.quote(searchEngineId)},"customSearchUrl":${JsonMini.quote(customSearchUrl)},"trackerBlockingEnabled":$trackerBlockingEnabled,"blockerLevel":${JsonMini.quote(blockerLevel)},"blockThirdPartyCookies":$blockThirdPartyCookies,"sendDntGpcHeaders":$sendDntGpcHeaders,"httpsOnlyMode":$httpsOnlyMode,"dohProviderId":${JsonMini.quote(dohProviderId)},"customDohUrl":${JsonMini.quote(customDohUrl)},"confirmExternalApp":$confirmExternalApp,"startupBehavior":${JsonMini.quote(startupBehavior)},"backgroundTabSleep":$backgroundTabSleep,"autoCloseDays":$autoCloseDays,"downloadTreeUri":${JsonMini.quote(downloadTreeUri)},"confirmBeforeDownload":$confirmBeforeDownload}"""
   }
 
   private fun extractString(json: String, key: String): String? =

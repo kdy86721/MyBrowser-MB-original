@@ -58,7 +58,7 @@ data class DesignUiConfig(
   fun barOuterShape(): Shape = RoundedCornerShape(barCornerRadiusDp.coerceIn(0f, 36f).dp)
 
   fun barInnerShape(): Shape =
-    RoundedCornerShape((barCornerRadiusDp - 8f).coerceIn(0f, 32f).dp)
+    RoundedCornerShape((barCornerRadiusDp - 4f).coerceIn(0f, 36f).dp)
 
   fun cardOuterShape(): Shape = RoundedCornerShape(cardCornerRadiusDp.coerceIn(8f, 28f).dp)
 
@@ -73,7 +73,7 @@ val LocalDesignConfig = compositionLocalOf { DesignUiConfig() }
  */
 object BrowserRadii {
   val FloatingOuter: Dp = 28.dp
-  val FloatingInner: Dp = 20.dp
+  val FloatingInner: Dp = 24.dp
   val CardOuter: Dp = 20.dp
   val CardInner: Dp = 12.dp
   val DialogSheet: Dp = 28.dp
@@ -105,8 +105,14 @@ object BrowserMotion {
 
   fun <T> morphingPillSpring(): SpringSpec<T> =
     spring(
-      dampingRatio = 0.72f,
-      stiffness = Spring.StiffnessMediumLow,
+      dampingRatio = 0.74f,
+      stiffness = 380f,
+    )
+
+  fun <T> tabDrawerSpring(): SpringSpec<T> =
+    spring(
+      dampingRatio = 0.80f,
+      stiffness = 340f,
     )
 
   fun <T> snappySpring(): SpringSpec<T> =
@@ -117,9 +123,9 @@ object BrowserMotion {
 }
 
 /**
- * Borderless Frosted Glass & Diffused Shadow surface for floating browser pills.
+ * Borderless Frosted Glass & Multi-Layer Diffused Shadow surface for floating browser pills.
  * Strictly renders zero hard BorderStroke and keeps foreground icons/text sharp by
- * blurring only an underlying backdrop layer on Android 12+ (API 31+).
+ * blurring only an underlying backdrop layer on Android 12+ (API 31+, RenderEffect-backed).
  */
 @Composable
 fun FrostedFloatingSurface(
@@ -136,29 +142,39 @@ fun FrostedFloatingSurface(
   val resolvedAlpha =
     if (isFocused) (opacity + 0.08f).coerceIn(0.84f, 0.99f)
     else opacity.coerceIn(0.55f, 1.0f)
-  val diffusedElevation = (10f + (clampedBlur / 32f) * 10f + if (isFocused) 4f else 0f).dp
+  val primaryElevation = (12f + (clampedBlur / 32f) * 8f + if (isFocused) 4f else 0f).coerceAtLeast(16f).dp
+  val outerAmbientElevation = (primaryElevation.value + 8f).dp
   val topColor =
     if (isFocused) {
       tintColor.copy(alpha = resolvedAlpha)
     } else {
       Color(
-        red = (tintColor.red * 0.92f + accentTint.red * 0.08f).coerceIn(0f, 1f),
-        green = (tintColor.green * 0.92f + accentTint.green * 0.08f).coerceIn(0f, 1f),
-        blue = (tintColor.blue * 0.92f + accentTint.blue * 0.08f).coerceIn(0f, 1f),
+        red = (tintColor.red * 0.90f + accentTint.red * 0.10f).coerceIn(0f, 1f),
+        green = (tintColor.green * 0.90f + accentTint.green * 0.10f).coerceIn(0f, 1f),
+        blue = (tintColor.blue * 0.90f + accentTint.blue * 0.10f).coerceIn(0f, 1f),
         alpha = resolvedAlpha,
       )
     }
+  val midColor =
+    tintColor.copy(alpha = (resolvedAlpha * 0.96f).coerceIn(0.52f, 1.0f))
   val bottomColor =
-    tintColor.copy(alpha = (resolvedAlpha * 0.94f).coerceIn(0.50f, 1.0f))
+    tintColor.copy(alpha = (resolvedAlpha * 0.92f).coerceIn(0.50f, 1.0f))
 
   Box(
     modifier =
       modifier
         .shadow(
-          elevation = diffusedElevation,
+          elevation = outerAmbientElevation,
           shape = shape,
           clip = false,
-          ambientColor = Color.Black.copy(alpha = 0.18f),
+          ambientColor = Color.Black.copy(alpha = 0.12f),
+          spotColor = Color.Transparent,
+        )
+        .shadow(
+          elevation = primaryElevation,
+          shape = shape,
+          clip = false,
+          ambientColor = Color.Black.copy(alpha = 0.16f),
           spotColor = Color.Black.copy(alpha = 0.24f),
         )
         .clip(shape),
@@ -174,7 +190,7 @@ fun FrostedFloatingSurface(
               Modifier
             }
           )
-          .background(brush = Brush.verticalGradient(listOf(topColor, bottomColor)))
+          .background(brush = Brush.verticalGradient(listOf(topColor, midColor, bottomColor)))
     )
     content()
   }

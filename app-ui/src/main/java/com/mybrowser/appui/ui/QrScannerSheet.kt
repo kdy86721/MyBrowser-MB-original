@@ -20,14 +20,18 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Close
@@ -112,7 +116,10 @@ fun QrScannerOverlay(
 
   Surface(
     color = MaterialTheme.colorScheme.background.copy(alpha = 0.98f),
-    modifier = Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    modifier =
+      Modifier.fillMaxSize()
+        .statusBarsPadding()
+        .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
   ) {
     Column(
       modifier = Modifier.fillMaxSize().padding(BrowserSpacing.Grid2),
@@ -304,19 +311,51 @@ private fun CameraXQrPreview(
 
 private fun decodeImageProxy(image: ImageProxy, reader: MultiFormatReader): String? {
   val plane = image.planes.firstOrNull() ?: return null
+  val width = image.width
+  val height = image.height
+  if (width <= 0 || height <= 0) return null
+
   val buffer = plane.buffer
-  val bytes = ByteArray(buffer.remaining())
-  buffer.get(bytes)
+  buffer.rewind()
+  val rowStride = plane.rowStride
+  val pixelStride = plane.pixelStride
+  val bytes =
+    if (pixelStride == 1 && rowStride == width && buffer.remaining() >= width * height) {
+      ByteArray(width * height).also { buffer.get(it) }
+    } else {
+      val rowBuffer = ByteArray(rowStride)
+      ByteArray(width * height).also { out ->
+        for (row in 0 until height) {
+          val remaining = buffer.remaining()
+          if (remaining <= 0) break
+          val toRead = minOf(rowStride, remaining)
+          buffer.get(rowBuffer, 0, toRead)
+          val outOffset = row * width
+          if (pixelStride == 1) {
+            val copyLen = minOf(width, toRead)
+            System.arraycopy(rowBuffer, 0, out, outOffset, copyLen)
+          } else {
+            for (col in 0 until width) {
+              val srcIdx = col * pixelStride
+              if (srcIdx < toRead) {
+                out[outOffset + col] = rowBuffer[srcIdx]
+              }
+            }
+          }
+        }
+      }
+    }
+
   return try {
     val source =
       PlanarYUVLuminanceSource(
         bytes,
-        image.width,
-        image.height,
+        width,
+        height,
         0,
         0,
-        image.width,
-        image.height,
+        width,
+        height,
         false,
       )
     val bitmap = BinaryBitmap(HybridBinarizer(source))
@@ -330,13 +369,30 @@ private fun decodeImageProxy(image: ImageProxy, reader: MultiFormatReader): Stri
 
 private fun decodeQrFromUri(context: android.content.Context, uri: Uri): String? {
   return try {
+    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     context.contentResolver.openInputStream(uri)?.use { input ->
-      val bmp = BitmapFactory.decodeStream(input) ?: return null
+      BitmapFactory.decodeStream(input, null, boundsOpts)
+    }
+    var sampleSize = 1
+    val maxDim = maxOf(boundsOpts.outWidth, boundsOpts.outHeight)
+    while (maxDim / sampleSize > 1280) {
+      sampleSize *= 2
+    }
+
+    val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    val bmp =
+      context.contentResolver.openInputStream(uri)?.use { input ->
+        BitmapFactory.decodeStream(input, null, decodeOpts)
+      } ?: return null
+
+    try {
       val pixels = IntArray(bmp.width * bmp.height)
       bmp.getPixels(pixels, 0, bmp.width, 0, 0, bmp.width, bmp.height)
       val source = RGBLuminanceSource(bmp.width, bmp.height, pixels)
       val bitmap = BinaryBitmap(HybridBinarizer(source))
       MultiFormatReader().decode(bitmap).text
+    } finally {
+      bmp.recycle()
     }
   } catch (_: Throwable) {
     null

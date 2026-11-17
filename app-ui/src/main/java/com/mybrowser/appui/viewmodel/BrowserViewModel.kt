@@ -11,6 +11,9 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mybrowser.appui.data.BookmarkEntity
@@ -39,6 +42,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -88,6 +92,16 @@ enum class TabSortMode(val id: String, val label: String) {
   companion object {
     fun fromId(raw: String): TabSortMode =
       entries.firstOrNull { it.id.equals(raw.trim(), ignoreCase = true) } ?: RECENT
+  }
+}
+
+enum class TabViewMode(val id: String, val label: String) {
+  THUMBNAIL_GRID("THUMBNAIL_GRID", "썸네일 그리드"),
+  COMPACT_LIST("COMPACT_LIST", "컴팩트 리스트");
+
+  companion object {
+    fun fromId(raw: String): TabViewMode =
+      entries.firstOrNull { it.id.equals(raw.trim(), ignoreCase = true) } ?: THUMBNAIL_GRID
   }
 }
 
@@ -230,12 +244,14 @@ data class BrowserSettingsUi(
   val webFontZoomPercent: Int = 100,
   val forceWebDark: Boolean = false,
   val hideStatusBar: Boolean = false,
-  val autoDualPaneUnfold: Boolean = true,
+  val autoDualPaneUnfold: Boolean = false,
   val splitGestureEnabled: Boolean = true,
   val splitGestureSensitivity: SplitGestureSensitivity = SplitGestureSensitivity.MEDIUM,
   val swipeUpOpenTabs: Boolean = true,
   val tabSwipeToCloseEnabled: Boolean = true,
   val tabDragFolderEnabled: Boolean = true,
+  val tabViewMode: TabViewMode = TabViewMode.THUMBNAIL_GRID,
+  val defaultTabSortMode: TabSortMode = TabSortMode.RECENT,
   val searchEngineId: String = "ddg",
   val customSearchUrl: String = "https://www.mojeek.com/search?q=%s",
   val trackerBlockingEnabled: Boolean = true,
@@ -364,7 +380,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   val webViewPool = AospWebViewPool(coreBridge.urlEngine, coreBridge.trackerBlocker)
 
   private val navCapabilitiesMap = mutableMapOf<String, WebViewNavCapabilities>()
-  private var accumulatedScrollDy = 0
+  val tabThumbnails = mutableStateMapOf<String, ImageBitmap>()
+  val tabFavicons = mutableStateMapOf<String, ImageBitmap>()
+  private var accumulatedScrollDyDp = 0f
   private var startupApplied = false
   private var omniboxSearchJob: Job? = null
 
@@ -400,60 +418,61 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     }
 
     viewModelScope.launch {
-      repository.preferencesFlow.collect { prefs ->
-        if (!prefs.toolbarConfigJson.isNullOrBlank()) {
-          coreBridge.toolbarConfig.restoreConfigJson(prefs.toolbarConfigJson)
-          syncToolbarConfigFromCore()
-        }
-        if (!prefs.designConfigJson.isNullOrBlank()) {
-          coreBridge.designConfig.restoreDesignConfigJson(prefs.designConfigJson)
-          syncDesignConfigFromCore()
-        }
-        if (!prefs.settingsStoreJson.isNullOrBlank()) {
-          coreBridge.settingsStore.restoreSettingsJson(prefs.settingsStoreJson)
-          syncSettingsFromCore()
-        }
-        if (!prefs.sitePermissionsJson.isNullOrBlank()) {
-          coreBridge.sitePermissions.restoreStateJson(prefs.sitePermissionsJson)
-          syncSitePermissionsFromCore()
-        }
+      val prefs = repository.preferencesFlow.first()
+      if (!prefs.toolbarConfigJson.isNullOrBlank()) {
+        coreBridge.toolbarConfig.restoreConfigJson(prefs.toolbarConfigJson)
+        syncToolbarConfigFromCore()
+      }
+      if (!prefs.designConfigJson.isNullOrBlank()) {
+        coreBridge.designConfig.restoreDesignConfigJson(prefs.designConfigJson)
+        syncDesignConfigFromCore()
+      }
+      if (!prefs.settingsStoreJson.isNullOrBlank()) {
+        coreBridge.settingsStore.restoreSettingsJson(prefs.settingsStoreJson)
+        syncSettingsFromCore()
+      }
+      if (!prefs.sitePermissionsJson.isNullOrBlank()) {
+        coreBridge.sitePermissions.restoreStateJson(prefs.sitePermissionsJson)
+        syncSitePermissionsFromCore()
+      }
 
-        val currentSettings = _uiState.value.settings
-        coreBridge.trackerBlocker.setEnabled(currentSettings.trackerBlockingEnabled)
-        coreBridge.trackerBlocker.setLevel(currentSettings.blockerLevel.id)
-        refreshBlockerStats()
+      val currentSettings = _uiState.value.settings
+      coreBridge.trackerBlocker.setEnabled(currentSettings.trackerBlockingEnabled)
+      coreBridge.trackerBlocker.setLevel(currentSettings.blockerLevel.id)
+      refreshBlockerStats()
 
-        if (!startupApplied) {
-          startupApplied = true
-          when (currentSettings.startupBehavior) {
-            StartupBehavior.RESTORE_TABS -> {
-              val snap = prefs.tabSessionSnapshotJson
-              if (!snap.isNullOrBlank()) {
-                coreBridge.tabStateMachine.restoreSnapshotBytes(
-                  snap.toByteArray(StandardCharsets.UTF_8)
-                )
-              }
-              if (currentSettings.autoCloseDays > 0) {
-                coreBridge.tabStateMachine.pruneInactiveTabs(
-                  currentSettings.autoCloseDays,
-                  System.currentTimeMillis(),
-                )
-              }
-              syncFromCoreBridge(persistTabs = false)
-            }
-            StartupBehavior.BLANK_PAGE -> {
-              coreBridge.tabStateMachine.updateTabNavigation(
-                tabId = _uiState.value.primaryTabId,
-                url = "about:blank",
-                title = "빈 페이지",
-                isLoading = false,
-                progress = 100,
+      if (!startupApplied) {
+        startupApplied = true
+        when (currentSettings.startupBehavior) {
+          StartupBehavior.RESTORE_TABS -> {
+            val snap = prefs.tabSessionSnapshotJson
+            if (!snap.isNullOrBlank()) {
+              coreBridge.tabStateMachine.restoreSnapshotBytes(
+                snap.toByteArray(StandardCharsets.UTF_8)
               )
-              syncFromCoreBridge(persistTabs = false)
             }
-            StartupBehavior.SPEED_DIAL -> Unit
+            if (currentSettings.autoCloseDays > 0) {
+              coreBridge.tabStateMachine.pruneInactiveTabs(
+                currentSettings.autoCloseDays,
+                System.currentTimeMillis(),
+              )
+            }
           }
+          StartupBehavior.BLANK_PAGE -> {
+            val primaryId = _uiState.value.primaryTabId
+            webViewPool.markInternalPage(primaryId, "about:blank")
+            coreBridge.tabStateMachine.updateTabNavigation(
+              tabId = primaryId,
+              url = "about:blank",
+              title = "빈 페이지",
+              isLoading = false,
+              progress = 100,
+            )
+          }
+          StartupBehavior.SPEED_DIAL -> Unit
         }
+        coreBridge.tabStateMachine.setTabSortMode(currentSettings.defaultTabSortMode.id)
+        syncFromCoreBridge(persistTabs = false)
       }
     }
   }
@@ -510,37 +529,51 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     if (!state.toolbarConfig.autoMinimize || state.isOmniboxFocused || state.isFindInPageVisible) {
       return
     }
-    accumulatedScrollDy =
-      if ((accumulatedScrollDy > 0 && dy < 0) || (accumulatedScrollDy < 0 && dy > 0)) {
-        dy
+    val density = appContext.resources.displayMetrics.density.coerceAtLeast(1f)
+    val dyDp = dy / density
+    accumulatedScrollDyDp =
+      if ((accumulatedScrollDyDp > 0f && dyDp < 0f) || (accumulatedScrollDyDp < 0f && dyDp > 0f)) {
+        dyDp
       } else {
-        accumulatedScrollDy + dy
+        accumulatedScrollDyDp + dyDp
       }
 
-    val downThreshold = state.settings.autoHideSensitivity.dyThreshold
-    val upThreshold = (downThreshold * 0.65f).toInt().coerceAtLeast(12)
+    val downThresholdDp =
+      when (state.settings.autoHideSensitivity) {
+        AutoHideSensitivity.LOW -> 58f
+        AutoHideSensitivity.MEDIUM -> 36f
+        AutoHideSensitivity.HIGH -> 20f
+      }
+    val upThresholdDp =
+      when (state.settings.autoHideSensitivity) {
+        AutoHideSensitivity.LOW -> 24f
+        AutoHideSensitivity.MEDIUM -> 16f
+        AutoHideSensitivity.HIGH -> 10f
+      }
 
-    if (accumulatedScrollDy > downThreshold && !state.isFloatingBarCollapsed) {
-      accumulatedScrollDy = 0
+    if (accumulatedScrollDyDp > downThresholdDp && !state.isFloatingBarCollapsed) {
+      accumulatedScrollDyDp = 0f
       _uiState.update { it.copy(isFloatingBarCollapsed = true) }
-    } else if (accumulatedScrollDy < -upThreshold && state.isFloatingBarCollapsed) {
-      accumulatedScrollDy = 0
+    } else if (accumulatedScrollDyDp < -upThresholdDp && state.isFloatingBarCollapsed) {
+      accumulatedScrollDyDp = 0f
       _uiState.update { it.copy(isFloatingBarCollapsed = false) }
     }
   }
 
   fun collapseFloatingBar() {
-    accumulatedScrollDy = 0
+    accumulatedScrollDyDp = 0f
     _uiState.update { it.copy(isFloatingBarCollapsed = true, isOmniboxFocused = false) }
   }
 
   fun expandFloatingBar() {
-    accumulatedScrollDy = 0
+    accumulatedScrollDyDp = 0f
     _uiState.update { it.copy(isFloatingBarCollapsed = false) }
   }
 
   fun stepAdjacentTab(delta: Int, targetPane: Int = _uiState.value.activePane) {
     if (!_uiState.value.toolbarConfig.swipeBarSwitchTabs) return
+    captureVisibleTabThumbnails()
+    resetFindInPageState()
     coreBridge.tabStateMachine.setActivePane(targetPane)
     coreBridge.tabStateMachine.stepAdjacentTab(delta)
     syncFromCoreBridge()
@@ -615,8 +648,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         _uiState.value.primaryTabId
       }
 
+    resetFindInPageState()
     coreBridge.tabStateMachine.setActivePane(targetPane)
     if (resolvedUrl == "about:mb" || resolvedUrl == "about:blank") {
+      webViewPool.markInternalPage(targetTabId, resolvedUrl)
+      tabThumbnails.remove(targetTabId)
+      tabFavicons.remove(targetTabId)
       coreBridge.tabStateMachine.updateTabNavigation(
         tabId = targetTabId,
         url = resolvedUrl,
@@ -672,13 +709,43 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     )
     if (!isLoading && url.isNotBlank() && !url.startsWith("about:")) {
       viewModelScope.launch { repository.recordVisit(url, title) }
+      if (progress >= 100) {
+        captureTabThumbnail(tabId)
+      }
     }
     syncFromCoreBridge()
   }
 
+  fun onWebViewIconUpdate(tabId: String, icon: Bitmap?) {
+    if (icon != null && !icon.isRecycled) {
+      tabFavicons[tabId] = icon.asImageBitmap()
+    }
+  }
+
+  fun captureTabThumbnail(tabId: String) {
+    val tab = _uiState.value.tabs.firstOrNull { it.id == tabId }
+    if (tab != null && (tab.url == "about:mb" || tab.url == "about:blank")) {
+      tabThumbnails.remove(tabId)
+      return
+    }
+    webViewPool.captureTabThumbnailBitmap(tabId)?.let { bmp ->
+      tabThumbnails[tabId] = bmp.asImageBitmap()
+    }
+  }
+
+  fun captureVisibleTabThumbnails() {
+    val state = _uiState.value
+    captureTabThumbnail(state.primaryTabId)
+    if (state.splitMode) {
+      state.secondaryTabId?.let { captureTabThumbnail(it) }
+    }
+  }
+
   fun onWebViewRequestBlocked(tabId: String) {
     coreBridge.tabStateMachine.incrementTabBlocked(tabId)
-    syncFromCoreBridge(persistTabs = false)
+    viewModelScope.launch {
+      syncFromCoreBridge(persistTabs = false)
+    }
   }
 
   fun onPermissionChallenge(challenge: WebSitePermissionChallenge) {
@@ -873,12 +940,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun toggleSplitMode(forceEnable: Boolean? = null) {
+    captureVisibleTabThumbnails()
     val next = forceEnable ?: !_uiState.value.splitMode
     coreBridge.tabStateMachine.setSplitMode(next)
     syncFromCoreBridge()
   }
 
   fun splitActiveTabWithGesture(directionRight: Boolean, sourcePane: Int = _uiState.value.activePane) {
+    captureVisibleTabThumbnails()
+    resetFindInPageState()
     coreBridge.tabStateMachine.setActivePane(sourcePane)
     coreBridge.tabStateMachine.splitActiveTabToPane(directionRight)
     _uiState.update {
@@ -892,12 +962,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun closeSplitKeepPane(keepPaneIndex: Int) {
+    resetFindInPageState()
     coreBridge.tabStateMachine.closeSplitKeepPane(keepPaneIndex)
     _uiState.update { it.copy(isOmniboxFocused = false, isFloatingBarCollapsed = false) }
     syncFromCoreBridge()
   }
 
   fun createNewTab(initialUrl: String = "about:mb", targetPane: Int = _uiState.value.activePane) {
+    captureVisibleTabThumbnails()
+    resetFindInPageState()
     coreBridge.tabStateMachine.createTab(
       initialUrl = initialUrl,
       title = if (initialUrl == "about:mb") "시작 페이지" else initialUrl,
@@ -913,6 +986,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun selectTab(tabId: String, targetPane: Int = _uiState.value.activePane) {
+    captureVisibleTabThumbnails()
+    resetFindInPageState()
     coreBridge.tabStateMachine.selectTab(tabId, targetPane)
     _uiState.update {
       it.copy(
@@ -925,8 +1000,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
   fun closeTab(tabId: String) {
     val hadMultiple = _uiState.value.tabs.size > 1
+    resetFindInPageState(clearWebViewMatches = false)
     webViewPool.destroyTab(tabId)
     navCapabilitiesMap.remove(tabId)
+    tabThumbnails.remove(tabId)
+    tabFavicons.remove(tabId)
     coreBridge.tabStateMachine.closeTab(tabId)
     if (!hadMultiple) {
       _uiState.update { it.copy(activeOverlay = BrowserOverlay.NONE) }
@@ -1004,6 +1082,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     syncFromCoreBridge()
   }
 
+  fun setDefaultTabSortMode(mode: TabSortMode) {
+    updateSetting("defaultTabSortMode", mode.id)
+  }
+
   fun dismissSnackbar() {
     _uiState.update { it.copy(snackbarNotification = null) }
   }
@@ -1029,6 +1111,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     coreBridge.tabStateMachine.setActivePane(paneIndex)
     val wentBack = webViewPool.goBack(tab.id)
     if (!wentBack) {
+      resetFindInPageState()
+      webViewPool.markInternalPage(tab.id, "about:mb")
       coreBridge.tabStateMachine.updateTabNavigation(
         tabId = tab.id,
         url = "about:mb",
@@ -1066,6 +1150,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
   fun goHomeInPane(paneIndex: Int) {
     val tab = tabForPane(paneIndex) ?: return
+    resetFindInPageState()
+    webViewPool.markInternalPage(tab.id, "about:mb")
+    tabThumbnails.remove(tab.id)
+    tabFavicons.remove(tab.id)
     coreBridge.tabStateMachine.setActivePane(paneIndex)
     coreBridge.tabStateMachine.updateTabNavigation(
       tabId = tab.id,
@@ -1079,6 +1167,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
   fun toggleBookmarkForPane(paneIndex: Int) {
     val tab = tabForPane(paneIndex) ?: return
+    if (tab.url.isBlank() || tab.url == "about:mb" || tab.url == "about:blank") return
     val isBookmarked = _uiState.value.bookmarks.any { it.url == tab.url }
     viewModelScope.launch { repository.toggleBookmark(tab.url, tab.title, isBookmarked) }
     emitSnackbar(if (isBookmarked) "북마크에서 삭제됨" else "북마크에 추가됨")
@@ -1122,7 +1211,15 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun closeFindInPage() {
-    _uiState.value.focusedTab?.let { webViewPool.clearFindInPage(it.id) }
+    resetFindInPageState(clearWebViewMatches = true)
+  }
+
+  private fun resetFindInPageState(clearWebViewMatches: Boolean = true) {
+    val state = _uiState.value
+    if (!state.isFindInPageVisible && state.findQuery.isEmpty()) return
+    if (clearWebViewMatches) {
+      state.focusedTab?.let { webViewPool.clearFindInPage(it.id) }
+    }
     _uiState.update {
       it.copy(
         isFindInPageVisible = false,
@@ -1257,6 +1354,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         coreBridge.tabStateMachine.pruneInactiveTabs(days, System.currentTimeMillis())
         syncFromCoreBridge()
       }
+    } else if (key == "defaultTabSortMode") {
+      val mode = TabSortMode.fromId(value)
+      coreBridge.tabStateMachine.setTabSortMode(mode.id)
+      syncFromCoreBridge()
     }
     syncSettingsFromCore()
     if (key == "backgroundTabSleep") {
@@ -1314,7 +1415,14 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun setDomainSiteOverride(domain: String, key: String, value: String) {
-    val exported = coreBridge.sitePermissions.setDomainOverride(domain, key, value)
+    val normalized =
+      if (domain.contains("://") || domain.contains('/')) {
+        coreBridge.urlEngine.extractRegistrableDomain(domain)
+      } else {
+        domain.trim().lowercase().removePrefix("www.")
+      }
+    if (normalized.isBlank() || !normalized.contains('.')) return
+    val exported = coreBridge.sitePermissions.setDomainOverride(normalized, key, value)
     syncSitePermissionsFromCore()
     viewModelScope.launch { repository.setSitePermissionsJson(exported) }
   }
@@ -1341,6 +1449,12 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
   }
 
   fun showOverlay(overlay: BrowserOverlay, libraryInitialTab: Int = 0) {
+    if (overlay == BrowserOverlay.TAB_SWITCHER) {
+      captureVisibleTabThumbnails()
+    }
+    if (overlay != BrowserOverlay.NONE) {
+      resetFindInPageState()
+    }
     refreshBlockerStats()
     _uiState.update {
       it.copy(
@@ -1426,7 +1540,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             webFontZoomPercent = obj.optInt("webFontZoomPercent", 100),
             forceWebDark = obj.optBoolean("forceWebDark", false),
             hideStatusBar = obj.optBoolean("hideStatusBar", false),
-            autoDualPaneUnfold = obj.optBoolean("autoDualPaneUnfold", true),
+            autoDualPaneUnfold = obj.optBoolean("autoDualPaneUnfold", false),
             splitGestureEnabled = obj.optBoolean("splitGestureEnabled", true),
             splitGestureSensitivity =
               SplitGestureSensitivity.fromId(
@@ -1435,6 +1549,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             swipeUpOpenTabs = obj.optBoolean("swipeUpOpenTabs", true),
             tabSwipeToCloseEnabled = obj.optBoolean("tabSwipeToCloseEnabled", true),
             tabDragFolderEnabled = obj.optBoolean("tabDragFolderEnabled", true),
+            tabViewMode = TabViewMode.fromId(obj.optString("tabViewMode", "THUMBNAIL_GRID")),
+            defaultTabSortMode = TabSortMode.fromId(obj.optString("defaultTabSortMode", "RECENT")),
             searchEngineId = obj.optString("searchEngineId", "ddg"),
             customSearchUrl =
               obj.optString("customSearchUrl", "https://www.mojeek.com/search?q=%s"),
